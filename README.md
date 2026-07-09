@@ -50,7 +50,25 @@ docker compose up -d --build
 http://localhost:8978
 ```
 
-SQLite 数据会保存在 Docker volume `sub2api-picker-data` 中。
+SQLite 数据会保存在项目的 `./data/app.db`，Docker 容器会把本地 `./data` 挂载到 `/data`，所以本地运行和 Docker 运行会看到同一份数据。
+
+如果 Docker 页面内容和本地代码对不上，先强制重建镜像：
+
+```bash
+docker compose down
+docker compose build --no-cache
+docker compose up -d
+```
+
+也可以把当前 `.env` 直接打进镜像，然后不用 compose 启动：
+
+```bash
+docker build --no-cache -t sub2api-picker .
+docker rm -f sub2api-picker
+docker run -d --name sub2api-picker -p 8978:8978 -v "${PWD}/data:/data" sub2api-picker
+```
+
+注意：这种方式会把 `.env` 里的账号和密钥写入镜像，只适合自用或私有环境，不要把镜像推到公开仓库。
 
 ## 本地运行
 

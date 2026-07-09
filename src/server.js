@@ -19,10 +19,21 @@ const { loginPan123ByPlaywright, publicUserInfo } = require("./pan123PlaywrightL
 
 const app = express();
 const port = Number(process.env.PORT || 8978);
+const publicDir = path.join(__dirname, "..", "public");
 
 app.use(express.json({ limit: "5mb" }));
 app.use(cookieParser());
-app.use(express.static(path.join(__dirname, "..", "public")));
+app.use(express.static(publicDir, {
+  etag: false,
+  lastModified: false,
+  setHeaders(res, filePath) {
+    if (filePath.endsWith(".html")) {
+      res.setHeader("Cache-Control", "no-store");
+      return;
+    }
+    res.setHeader("Cache-Control", "no-cache, must-revalidate");
+  }
+}));
 
 function parseJson(value, fallback = []) {
   try {
@@ -1380,7 +1391,8 @@ app.get("/api/records", requireAuth, (req, res) => {
 });
 
 app.use((req, res) => {
-  res.sendFile(path.join(__dirname, "..", "public", "index.html"));
+  res.setHeader("Cache-Control", "no-store");
+  res.sendFile(path.join(publicDir, "index.html"));
 });
 
 app.listen(port, () => {

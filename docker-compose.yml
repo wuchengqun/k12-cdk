@@ -27,7 +27,4 @@ services:
       PAN123_PLAYWRIGHT_TIMEOUT_MS: ${PAN123_PLAYWRIGHT_TIMEOUT_MS:-90000}
       DB_PATH: /data/app.db
     volumes:
-      - sub2api-picker-data:/data
-
-volumes:
-  sub2api-picker-data:
+      - ./data:/data
