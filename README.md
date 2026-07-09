@@ -14,6 +14,7 @@
 - 前台输入数量，批量验活，导出 Sub2API 原生账号 JSON
 - 首页展示用户已取号数量、批次数、已分配账号
 - 取号页展示当前取号分组下剩余账号数量
+- 取号支持下载 JSON 或生成 123 云盘分享链接
 - 后台按用户、按 Sub2API 账号统计取号数量
 - 后台展示今日、总计、按天取号统计
 - 管理员可删除取号批次和对应账号明细
@@ -46,7 +47,7 @@ docker compose up -d --build
 打开：
 
 ```text
-http://localhost:3000
+http://localhost:8978
 ```
 
 SQLite 数据会保存在 Docker volume `sub2api-picker-data` 中。
@@ -61,7 +62,7 @@ npm start
 常用环境变量：
 
 ```text
-PORT=3000
+PORT=8978
 DB_PATH=./data/app.db
 APP_USERNAME=admin
 APP_PASSWORD=admin123456
@@ -71,16 +72,31 @@ APP_SECRET=change-this-to-a-long-random-string
 SUB2API_URL=http://your-sub2api-host:8080
 SUB2API_EMAIL=your@email.com
 SUB2API_PASSWORD=your-password
+PAN123_ACCOUNT=your-123pan-account
+PAN123_PASSWORD=your-123pan-password
+PAN123_TOKEN=
+PAN123_COOKIE=
+PAN123_LOGIN_UUID=
+PAN123_PARENT_FILE_ID=0
+PAN123_SHARE_DAYS=1
+PAN123_LOGIN_METHOD=api
+PAN123_PLAYWRIGHT_HEADLESS=false
+PAN123_PLAYWRIGHT_CHANNEL=chrome
+PAN123_PLAYWRIGHT_EXECUTABLE_PATH=
+PAN123_PLAYWRIGHT_TIMEOUT_MS=90000
 ```
+
+`PAN123_ACCOUNT` 和 `PAN123_PASSWORD` 用于 123 云盘登录。管理员进入“后台配置 / 123云盘”后，可以在后台选择“接口登录”或“Playwright 登录”，也可以切换 Playwright 无头模式；登录成功后会把凭证和用户信息保存到本地 SQLite，后续“卡网分享”会继续走接口自动复用。也可以改用 `PAN123_TOKEN` 或 `PAN123_COOKIE` 作为分享凭证。
 
 ## 使用流程
 
 1. 使用后台管理员登录。
-2. 进入“后台配置 / Sub2API账号”，测试连接并同步分组。
-3. 在每个 Sub2API 账号里勾选“取号分组”和“已取号分组”。
-4. 进入“用户分配”，给前台用户分配一个或多个 Sub2API 账号。
-5. 使用前台用户登录，进入“取号”，选择账号、输入数量、验活并下载 JSON。
-6. 如果账号未勾选取号分组，前台会禁止取号。
-7. 取号页会展示当前取号分组剩余账号总数和各分组剩余数量。
-8. 如果取号后移动到了已取号分组，可在取号记录里点击“挪回”恢复到原取号分组。
-9. 后台记录页可删除取号批次；首页和后台首页会展示今日、总计、按天统计。
+2. 如需使用“卡网分享”，进入“后台配置 / 123云盘”，选择登录方式并点击“按配置登录”完成 123 云盘登录。
+3. 进入“后台配置 / Sub2API账号”，测试连接并同步分组。
+4. 在每个 Sub2API 账号里勾选“取号分组”和“已取号分组”。
+5. 进入“用户分配”，给前台用户分配一个或多个 Sub2API 账号。
+6. 使用前台用户登录，进入“取号”，选择账号、输入数量、验活，并选择“下载 JSON”或“卡网分享”。
+7. 如果账号未勾选取号分组，前台会禁止取号。
+8. 取号页会展示当前取号分组剩余账号总数和各分组剩余数量。
+9. 如果取号后移动到了已取号分组，可在取号记录里点击“挪回”恢复到原取号分组。
+10. 后台记录页可删除取号批次；首页和后台首页会展示今日、总计、按天统计。

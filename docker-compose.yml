@@ -4,7 +4,7 @@ services:
     container_name: sub2api-picker
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "8978:8978"
     environment:
       APP_USERNAME: ${APP_USERNAME:-admin}
       APP_PASSWORD: ${APP_PASSWORD:-admin123456}
@@ -14,6 +14,17 @@ services:
       SUB2API_URL: ${SUB2API_URL:-}
       SUB2API_EMAIL: ${SUB2API_EMAIL:-}
       SUB2API_PASSWORD: ${SUB2API_PASSWORD:-}
+      PAN123_ACCOUNT: ${PAN123_ACCOUNT:-}
+      PAN123_PASSWORD: ${PAN123_PASSWORD:-}
+      PAN123_TOKEN: ${PAN123_TOKEN:-}
+      PAN123_COOKIE: ${PAN123_COOKIE:-}
+      PAN123_LOGIN_UUID: ${PAN123_LOGIN_UUID:-}
+      PAN123_PARENT_FILE_ID: ${PAN123_PARENT_FILE_ID:-0}
+      PAN123_SHARE_DAYS: ${PAN123_SHARE_DAYS:-1}
+      PAN123_LOGIN_METHOD: ${PAN123_LOGIN_METHOD:-api}
+      PAN123_PLAYWRIGHT_EXECUTABLE_PATH: ${PAN123_PLAYWRIGHT_EXECUTABLE_PATH:-/usr/bin/chromium-browser}
+      PAN123_PLAYWRIGHT_HEADLESS: ${PAN123_PLAYWRIGHT_HEADLESS:-true}
+      PAN123_PLAYWRIGHT_TIMEOUT_MS: ${PAN123_PLAYWRIGHT_TIMEOUT_MS:-90000}
       DB_PATH: /data/app.db
     volumes:
       - sub2api-picker-data:/data

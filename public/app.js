@@ -7,7 +7,8 @@ const state = {
     overview: null,
     profiles: [],
     users: [],
-    records: { batches: [], records: [] }
+    records: { batches: [], records: [] },
+    pan123: null
   },
   availability: null,
   availabilityLoading: false,
@@ -56,22 +57,40 @@ function setBusy(value) {
   render();
 }
 
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.style.position = "fixed";
+  area.style.left = "-9999px";
+  document.body.appendChild(area);
+  area.focus();
+  area.select();
+  document.execCommand("copy");
+  area.remove();
+}
+
 async function loadFront() {
   state.dashboard = await api("/api/front/dashboard");
 }
 
 async function loadAdmin() {
   if (state.user?.role !== "admin") return;
-  const [overview, profiles, users, records] = await Promise.all([
+  const [overview, profiles, users, records, pan123] = await Promise.all([
     api("/api/admin/overview"),
     api("/api/admin/profiles"),
     api("/api/admin/users"),
-    api("/api/admin/records")
+    api("/api/admin/records"),
+    api("/api/admin/pan123/status")
   ]);
   state.admin.overview = overview;
   state.admin.profiles = profiles.profiles || [];
   state.admin.users = users.users || [];
   state.admin.records = records;
+  state.admin.pan123 = pan123;
 }
 
 async function loadAvailability(profileId = null) {
@@ -198,6 +217,7 @@ function frontNav() {
 function adminNav() {
   return [
     ["adminHome", "后台首页"],
+    ["pan123", "123云盘"],
     ["profiles", "Sub2API账号"],
     ["users", "用户分配"],
     ["adminRecords", "取号记录"]
@@ -210,6 +230,7 @@ function pageTitle() {
     take: "前台取号",
     frontRecords: "我的取号记录",
     adminHome: "后台统计",
+    pan123: "123 云盘登录",
     profiles: "Sub2API 账号配置",
     users: "用户与分配",
     adminRecords: "全部取号记录"
@@ -224,6 +245,7 @@ function frontView() {
 }
 
 function adminView() {
+  if (state.tab === "pan123") return pan123View();
   if (state.tab === "profiles") return profilesView();
   if (state.tab === "users") return usersView();
   if (state.tab === "adminRecords") return adminRecordsView();
@@ -346,7 +368,7 @@ function takeView() {
       <div class="section-head">
         <div>
           <h2>取号</h2>
-          <p>先确认可提取数量（未验活），再输入数量并导出 JSON。</p>
+          <p>先确认可提取数量（未验活），再输入数量，并选择下载 JSON 或卡网分享。</p>
         </div>
       </div>
       ${availabilityPanel()}
@@ -363,8 +385,21 @@ function takeView() {
           <input name="validate" type="checkbox" checked />
           <span>取号前批量验活</span>
         </label>
+        <div class="field delivery-field">
+          <label>取号后处理</label>
+          <div class="segmented">
+            <label>
+              <input type="radio" name="delivery" value="download" checked />
+              <span>下载 JSON</span>
+            </label>
+            <label>
+              <input type="radio" name="delivery" value="kanwang_share" />
+              <span>卡网分享</span>
+            </label>
+          </div>
+        </div>
         <div class="actions">
-          <button class="btn primary" ${state.busy ? "disabled" : ""} type="submit">取号并下载 JSON</button>
+          <button class="btn primary" ${state.busy ? "disabled" : ""} type="submit">开始取号</button>
           <button class="btn ghost" ${state.busy ? "disabled" : ""} type="button" id="validate-button">只验活</button>
           <button class="btn ghost" ${state.busy || state.availabilityLoading ? "disabled" : ""} type="button" id="refresh-availability">刷新可提取数量</button>
         </div>
@@ -404,6 +439,61 @@ function adminHomeView() {
         <h2>按用户统计</h2>
         ${smallStatTable(overview.per_user, "username")}
       </div>
+    </section>
+  `;
+}
+
+function pan123View() {
+  const status = state.admin.pan123 || {};
+  const config = status.config || {};
+  const stateText = status.logged_in ? "已登录" : "未登录";
+  const credentialText = status.has_token ? "Token" : status.has_cookie ? "Cookie" : "-";
+  const userText = status.user?.nickname || status.user?.passport || "-";
+  const loginMethod = config.login_method === "playwright" ? "playwright" : "api";
+  return `
+    <section class="panel">
+      <div class="section-head">
+        <div>
+          <h2>123 云盘登录配置</h2>
+          <p>接口登录会直接用 123 云盘接口获取 token；Playwright 登录会打开官方登录页，也可以切换无头模式。登录成功后，卡网分享会继续走接口复用凭证。</p>
+        </div>
+      </div>
+      <div class="stats compact-stats">
+        <div class="stat"><b>${escapeHtml(stateText)}</b><span>当前状态</span></div>
+        <div class="stat"><b>${escapeHtml(status.account || "-")}</b><span>账号</span></div>
+        <div class="stat"><b>${escapeHtml(credentialText)}</b><span>凭证类型</span></div>
+      </div>
+      <div class="stats compact-stats">
+        <div class="stat"><b>${escapeHtml(userText)}</b><span>云盘用户</span></div>
+        <div class="stat"><b>${escapeHtml(status.user?.uid || "-")}</b><span>UID</span></div>
+        <div class="stat"><b>${escapeHtml(status.user?.file_count ?? "-")}</b><span>文件数</span></div>
+      </div>
+      <form id="pan123-config-form" class="form-grid compact-form">
+        <div class="field">
+          <label for="pan123-login-method">登录方式</label>
+          <select id="pan123-login-method" name="login_method">
+            <option value="api" ${loginMethod === "api" ? "selected" : ""}>接口登录</option>
+            <option value="playwright" ${loginMethod === "playwright" ? "selected" : ""}>Playwright 登录</option>
+          </select>
+        </div>
+        <label class="toggle">
+          <input name="playwright_headless" type="checkbox" ${config.playwright_headless ? "checked" : ""} />
+          <span>Playwright 无头模式</span>
+        </label>
+        <div class="field">
+          <label for="pan123-timeout">Playwright 超时（毫秒）</label>
+          <input id="pan123-timeout" name="playwright_timeout_ms" type="number" min="10000" max="300000" step="1000" value="${escapeHtml(config.playwright_timeout_ms || 90000)}" />
+        </div>
+        <div class="actions">
+          <button class="btn primary" type="button" id="pan123-login" ${state.busy ? "disabled" : ""}>按配置登录</button>
+          <button class="btn ghost" type="submit" ${state.busy ? "disabled" : ""}>保存配置</button>
+          <button class="btn ghost" type="button" id="pan123-refresh" ${state.busy ? "disabled" : ""}>刷新状态</button>
+          ${status.logged_in ? `<button class="btn danger" type="button" id="pan123-logout" ${state.busy ? "disabled" : ""}>清除登录</button>` : ""}
+        </div>
+      </form>
+      <p class="muted">接口登录速度更快；如果接口登录被风控或没有返回 token，可切换到 Playwright 登录。无头模式适合服务器运行，有头模式适合需要手动处理页面验证时使用。</p>
+      ${status.updated_at ? `<p class="muted">上次登录：${escapeHtml(fmtDate(status.updated_at))}</p>` : ""}
+      ${status.configured ? "" : `<div class="notice error">还没有配置 123 云盘账号或密码。</div>`}
     </section>
   `;
 }
@@ -600,12 +690,40 @@ function canRestoreBatch(batch) {
     && Number(batch.issued_count || 0) > 0;
 }
 
+function shareText(batch) {
+  if (!batch.share_url) return "";
+  return `${batch.share_url}${batch.share_pwd ? ` 提取码: ${batch.share_pwd}` : ""}`;
+}
+
+function shareCell(batch) {
+  const status = batch.share_status || "not_requested";
+  if (status === "ok" && batch.share_url) {
+    return `
+      <div class="share-cell">
+        <a class="btn tiny" href="${escapeHtml(batch.share_url)}" target="_blank" rel="noreferrer">打开</a>
+        <button class="btn tiny ghost" type="button" data-copy-share="${escapeHtml(shareText(batch))}">复制</button>
+        ${batch.share_pwd ? `<span class="muted">码 ${escapeHtml(batch.share_pwd)}</span>` : ""}
+      </div>
+    `;
+  }
+  if (status === "failed") {
+    return `
+      <div class="share-cell">
+        <span class="muted">失败：${escapeHtml(batch.share_error || "分享失败")}</span>
+        <button class="btn tiny" type="button" data-share-batch="${batch.id}">重试</button>
+      </div>
+    `;
+  }
+  if (status === "pending") return `<span class="muted">分享中</span>`;
+  return `<button class="btn tiny" type="button" data-share-batch="${batch.id}">卡网分享</button>`;
+}
+
 function batchTable(rows, showUser) {
   return `
     <table>
       <thead>
         <tr>
-          <th>时间</th>${showUser ? "<th>用户</th>" : ""}<th>Sub2API</th><th>数量</th><th>验活</th><th>处理</th><th>挪回</th><th>下载</th>${showUser ? "<th>删除</th>" : ""}
+          <th>时间</th>${showUser ? "<th>用户</th>" : ""}<th>Sub2API</th><th>数量</th><th>验活</th><th>处理</th><th>分享</th><th>挪回</th><th>下载</th>${showUser ? "<th>删除</th>" : ""}
         </tr>
       </thead>
       <tbody>
@@ -617,6 +735,7 @@ function batchTable(rows, showUser) {
             <td>${batch.issued_count}/${batch.requested_count}</td>
             <td>${escapeHtml(batch.validation_status || "")}</td>
             <td>${escapeHtml(batch.restore_status || batch.remote_move_status || "")}</td>
+            <td>${shareCell(batch)}</td>
             <td>
               ${canRestoreBatch(batch)
                 ? `<button class="btn tiny" type="button" data-restore-batch="${batch.id}">挪回</button>`
@@ -625,7 +744,7 @@ function batchTable(rows, showUser) {
             <td><a class="btn tiny" href="/api/take/${batch.id}/download">下载</a></td>
             ${showUser ? `<td><button class="btn tiny danger" type="button" data-delete-batch="${batch.id}">删除</button></td>` : ""}
           </tr>
-        `).join("") || `<tr><td colspan="${showUser ? 9 : 7}" class="muted">暂无记录</td></tr>`}
+        `).join("") || `<tr><td colspan="${showUser ? 10 : 8}" class="muted">暂无记录</td></tr>`}
       </tbody>
     </table>
   `;
@@ -681,6 +800,15 @@ function userPayloadFromForm(form) {
     role: form.elements.role.value,
     enabled: form.elements.enabled.checked,
     profile_ids: checkedValues(form, "profile_ids")
+  };
+}
+
+function pan123ConfigPayload(form) {
+  const timeout = Number(form.elements.playwright_timeout_ms.value || 90000);
+  return {
+    login_method: form.elements.login_method.value === "playwright" ? "playwright" : "api",
+    playwright_headless: Boolean(form.elements.playwright_headless.checked),
+    playwright_timeout_ms: Number.isFinite(timeout) ? timeout : 90000
   };
 }
 
@@ -749,7 +877,8 @@ function bindEvents() {
     const payload = {
       profile_id: Number(form.get("profile_id")),
       count: Number(form.get("count")),
-      validate: form.get("validate") === "on"
+      validate: form.get("validate") === "on",
+      delivery: form.get("delivery") || "download"
     };
     setBusy(true);
     try {
@@ -763,7 +892,19 @@ function bindEvents() {
         setMessage("", "当前取号分组没有可提取账号，已停止取号，不会生成下载文件");
         return;
       }
-      state.notice = `取号完成：${data.issued_count}/${data.requested_count}\n${data.validation_message}\n${data.remote_move_status}`;
+      const baseMessage = `取号完成：${data.issued_count}/${data.requested_count}\n${data.validation_message}\n${data.remote_move_status}`;
+      if (payload.delivery === "kanwang_share") {
+        if (data.share?.status === "ok") {
+          state.notice = `${baseMessage}\n卡网分享：${data.share.message || `${data.share.url} 提取码: ${data.share.pwd || ""}`}`;
+          state.error = "";
+        } else {
+          state.notice = baseMessage;
+          state.error = `卡网分享失败：${data.share?.error || "请稍后在记录里重试"}`;
+        }
+        render();
+        return;
+      }
+      state.notice = baseMessage;
       state.error = "";
       render();
       window.location.href = data.download_url;
@@ -845,6 +986,100 @@ function bindEvents() {
         setBusy(false);
       }
     });
+  });
+
+  document.querySelectorAll("[data-share-batch]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      setBusy(true);
+      try {
+        const data = await api(`/api/take/${button.dataset.shareBatch}/share`, {
+          method: "POST",
+          body: "{}"
+        });
+        await refreshAll();
+        setMessage(`卡网分享已生成：${data.share.message || `${data.share.url || ""} 提取码: ${data.share.pwd || ""}`}`);
+      } catch (error) {
+        await refreshAll().catch(() => {});
+        setMessage("", error.message);
+      } finally {
+        setBusy(false);
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-copy-share]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await copyText(button.dataset.copyShare);
+        setMessage("分享链接已复制。");
+      } catch (error) {
+        setMessage("", "复制失败，请手动复制分享链接。");
+      }
+    });
+  });
+
+  document.getElementById("pan123-config-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const payload = pan123ConfigPayload(event.currentTarget);
+    setBusy(true);
+    try {
+      const data = await api("/api/admin/pan123/config", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      state.admin.pan123 = data.status;
+      setMessage("123 云盘登录配置已保存。");
+    } catch (error) {
+      setMessage("", error.message);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  document.getElementById("pan123-login")?.addEventListener("click", async () => {
+    const form = document.getElementById("pan123-config-form");
+    const config = pan123ConfigPayload(form);
+    setBusy(true);
+    try {
+      const data = await api("/api/admin/pan123/login", {
+        method: "POST",
+        body: JSON.stringify({
+          method: config.login_method,
+          config
+        })
+      });
+      state.admin.pan123 = data.status;
+      setMessage(`${config.login_method === "playwright" ? "Playwright" : "接口"}登录成功，卡网分享会继续复用这次 123 云盘登录状态。`);
+    } catch (error) {
+      setMessage("", error.message);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  document.getElementById("pan123-refresh")?.addEventListener("click", async () => {
+    setBusy(true);
+    try {
+      state.admin.pan123 = await api("/api/admin/pan123/status");
+      setMessage("123 云盘状态已刷新。");
+    } catch (error) {
+      setMessage("", error.message);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  document.getElementById("pan123-logout")?.addEventListener("click", async () => {
+    setBusy(true);
+    try {
+      const data = await api("/api/admin/pan123/logout", { method: "POST", body: "{}" });
+      state.admin.pan123 = data.status;
+      setMessage("123 云盘登录状态已清除。");
+    } catch (error) {
+      setMessage("", error.message);
+    } finally {
+      setBusy(false);
+    }
   });
 
   document.querySelectorAll("[data-delete-batch]").forEach((button) => {

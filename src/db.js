@@ -132,6 +132,13 @@ function migrate() {
   addColumn("take_batches", "profile_name TEXT");
   addColumn("take_batches", "restore_status TEXT");
   addColumn("take_batches", "restored_at TEXT");
+  addColumn("take_batches", "delivery_method TEXT NOT NULL DEFAULT 'download'");
+  addColumn("take_batches", "share_status TEXT");
+  addColumn("take_batches", "share_url TEXT");
+  addColumn("take_batches", "share_pwd TEXT");
+  addColumn("take_batches", "share_file_id INTEGER");
+  addColumn("take_batches", "share_error TEXT");
+  addColumn("take_batches", "shared_at TEXT");
 
   addColumn("take_records", "user_id INTEGER");
   addColumn("take_records", "profile_id INTEGER");

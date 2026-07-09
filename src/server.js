@@ -14,9 +14,11 @@ const {
   now
 } = require("./db");
 const { Sub2ApiClient, Sub2ApiError } = require("./sub2apiClient");
+const { Pan123Client, Pan123Error } = require("./pan123Client");
+const { loginPan123ByPlaywright, publicUserInfo } = require("./pan123PlaywrightLogin");
 
 const app = express();
-const port = Number(process.env.PORT || 3000);
+const port = Number(process.env.PORT || 8978);
 
 app.use(express.json({ limit: "5mb" }));
 app.use(cookieParser());
@@ -158,6 +160,12 @@ function requireAdmin(req, res, next) {
 
 function handleError(res, error) {
   console.error(error);
+  if (error instanceof Pan123Error) {
+    return res.status(error.statusCode || 502).json({
+      error: error.message,
+      detail: error.detail
+    });
+  }
   if (error.statusCode) {
     return res.status(error.statusCode).json({ error: error.message || "请求失败" });
   }
@@ -434,7 +442,8 @@ function frontStats(user) {
   }));
   const recent = db.prepare(`
     SELECT id, profile_id, profile_name, requested_count, issued_count,
-           validation_status, remote_move_status, restore_status, restored_at, created_at
+           validation_status, remote_move_status, restore_status, restored_at, delivery_method,
+           share_status, share_url, share_pwd, share_error, shared_at, created_at
     FROM take_batches
     WHERE user_id = ?
     ORDER BY created_at DESC
@@ -546,6 +555,261 @@ function replaceAssignments(userId, profileIds) {
   tx();
 }
 
+function maskText(value, head = 3, tail = 4) {
+  const text = String(value || "");
+  if (!text) return "";
+  if (text.length <= head + tail) return "*".repeat(text.length);
+  return `${text.slice(0, head)}${"*".repeat(Math.max(4, text.length - head - tail))}${text.slice(-tail)}`;
+}
+
+function pan123StoredAuth() {
+  const saved = getSetting("pan123_auth", {}) || {};
+  return {
+    token: String(saved.token || "").trim(),
+    cookie: String(saved.cookie || "").trim(),
+    loginUuid: String(saved.loginUuid || "").trim(),
+    updatedAt: saved.updatedAt || "",
+    loginMethod: saved.loginMethod || "",
+    userInfo: saved.userInfo || null
+  };
+}
+
+function boolFromValue(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  return !["0", "false", "no", "off"].includes(String(value).trim().toLowerCase());
+}
+
+function pan123StoredConfig() {
+  const saved = getSetting("pan123_config", {}) || {};
+  const envMethod = String(process.env.PAN123_LOGIN_METHOD || "").trim().toLowerCase();
+  const savedMethod = String(saved.login_method || saved.loginMethod || "").trim().toLowerCase();
+  const loginMethod = ["api", "playwright"].includes(savedMethod)
+    ? savedMethod
+    : ["api", "playwright"].includes(envMethod) ? envMethod : "api";
+  const timeout = Number(saved.playwright_timeout_ms || saved.playwrightTimeoutMs || process.env.PAN123_PLAYWRIGHT_TIMEOUT_MS || 90000);
+  return {
+    login_method: loginMethod,
+    playwright_headless: saved.playwright_headless === undefined && saved.playwrightHeadless === undefined
+      ? boolFromValue(process.env.PAN123_PLAYWRIGHT_HEADLESS, process.env.NODE_ENV === "production")
+      : Boolean(saved.playwright_headless ?? saved.playwrightHeadless),
+    playwright_timeout_ms: Number.isFinite(timeout) && timeout > 0 ? Math.min(Math.max(timeout, 10000), 300000) : 90000
+  };
+}
+
+function pan123PublicConfig() {
+  return pan123StoredConfig();
+}
+
+function savePan123Config(body = {}) {
+  const current = pan123StoredConfig();
+  const requestedMethod = String(body.login_method || body.loginMethod || "").trim().toLowerCase();
+  const hasHeadless = Object.prototype.hasOwnProperty.call(body, "playwright_headless")
+    || Object.prototype.hasOwnProperty.call(body, "playwrightHeadless");
+  const requestedHeadless = Object.prototype.hasOwnProperty.call(body, "playwright_headless")
+    ? body.playwright_headless
+    : body.playwrightHeadless;
+  const loginMethod = ["api", "playwright"].includes(requestedMethod)
+    ? requestedMethod
+    : current.login_method;
+  const timeout = Number(body.playwright_timeout_ms || body.playwrightTimeoutMs || current.playwright_timeout_ms);
+  const config = {
+    login_method: loginMethod,
+    playwright_headless: hasHeadless ? boolFromValue(requestedHeadless, current.playwright_headless) : current.playwright_headless,
+    playwright_timeout_ms: Number.isFinite(timeout) && timeout > 0 ? Math.min(Math.max(timeout, 10000), 300000) : current.playwright_timeout_ms
+  };
+  setSetting("pan123_config", config);
+  return config;
+}
+
+function pan123ClientConfig(extra = {}) {
+  const saved = pan123EffectiveAuth();
+  return {
+    token: saved.token,
+    cookie: saved.cookie,
+    loginUuid: saved.loginUuid,
+    ...extra
+  };
+}
+
+function pan123EffectiveAuth() {
+  const saved = pan123StoredAuth();
+  return {
+    token: saved.token || String(process.env.PAN123_TOKEN || "").trim(),
+    cookie: saved.cookie || String(process.env.PAN123_COOKIE || "").trim(),
+    loginUuid: saved.loginUuid || String(process.env.PAN123_LOGIN_UUID || "").trim(),
+    updatedAt: saved.updatedAt,
+    loginMethod: saved.loginMethod,
+    userInfo: saved.userInfo
+  };
+}
+
+function pan123PublicStatus() {
+  const saved = pan123EffectiveAuth();
+  const account = process.env.PAN123_ACCOUNT || "";
+  return {
+    account: maskText(account),
+    configured: Boolean(account && process.env.PAN123_PASSWORD),
+    logged_in: Boolean(saved.token || saved.cookie),
+    has_token: Boolean(saved.token),
+    has_cookie: Boolean(saved.cookie),
+    updated_at: saved.updatedAt,
+    login_method: saved.loginMethod || "",
+    user: publicUserInfo(saved.userInfo),
+    config: pan123PublicConfig()
+  };
+}
+
+function savePan123Auth({ token = "", cookie = "", loginUuid = "", userInfo = null, loginMethod = "" }) {
+  const auth = {
+    token,
+    cookie,
+    loginUuid,
+    userInfo,
+    loginMethod,
+    updatedAt: now()
+  };
+  setSetting("pan123_auth", auth);
+  return pan123PublicStatus();
+}
+
+async function loginPan123WithApi() {
+  const client = new Pan123Client({
+    token: "",
+    cookie: "",
+    loginUuid: process.env.PAN123_LOGIN_UUID || ""
+  });
+  const token = await client.login();
+  const authedClient = new Pan123Client({
+    token: token || "",
+    cookie: token ? "" : client.cookie,
+    loginUuid: client.loginUuid
+  });
+  const userInfo = await authedClient.userInfo();
+  return savePan123Auth({
+    token: token || "",
+    cookie: token ? "" : client.cookie,
+    loginUuid: client.loginUuid,
+    userInfo,
+    loginMethod: "api"
+  });
+}
+
+async function loginPan123WithPlaywright() {
+  const config = pan123StoredConfig();
+  const result = await loginPan123ByPlaywright({
+    headless: config.playwright_headless,
+    timeoutMs: config.playwright_timeout_ms
+  });
+  return savePan123Auth({
+    token: result.token || "",
+    cookie: "",
+    loginUuid: result.loginUuid || "",
+    userInfo: result.userInfo || null,
+    loginMethod: "playwright"
+  });
+}
+
+async function loginPan123WithConfiguredMethod(method = "") {
+  const targetMethod = ["api", "playwright"].includes(String(method).trim().toLowerCase())
+    ? String(method).trim().toLowerCase()
+    : pan123StoredConfig().login_method;
+  return targetMethod === "playwright" ? loginPan123WithPlaywright() : loginPan123WithApi();
+}
+
+function shareFileName(batch) {
+  const stamp = new Date(batch.created_at || Date.now()).toISOString().replace(/\D/g, "").slice(0, 14);
+  return `sub2api-accounts-${stamp}-${String(batch.id).slice(0, 8)}.json`;
+}
+
+function publicShare(row) {
+  if (!row) return null;
+  return {
+    status: row.share_status || "not_requested",
+    url: row.share_url || "",
+    pwd: row.share_pwd || "",
+    file_id: row.share_file_id || null,
+    error: row.share_error || "",
+    shared_at: row.shared_at || ""
+  };
+}
+
+function updateBatchShare(batchId, patch) {
+  db.prepare(`
+    UPDATE take_batches
+    SET share_status = @share_status,
+        share_url = @share_url,
+        share_pwd = @share_pwd,
+        share_file_id = @share_file_id,
+        share_error = @share_error,
+        shared_at = @shared_at
+    WHERE id = @id
+  `).run({
+    id: batchId,
+    share_status: patch.share_status || null,
+    share_url: patch.share_url || null,
+    share_pwd: patch.share_pwd || null,
+    share_file_id: patch.share_file_id || null,
+    share_error: patch.share_error || null,
+    shared_at: patch.shared_at || null
+  });
+}
+
+async function shareBatchToPan(batch) {
+  if (!batch.export_json) {
+    const error = new Error("这个批次没有可分享的 JSON 内容");
+    error.statusCode = 400;
+    throw error;
+  }
+  const auth = pan123EffectiveAuth();
+  if (!auth.token && !auth.cookie) {
+    const error = new Error("请先在后台 123云盘 页面点击 Playwright 网页登录，再使用卡网分享");
+    error.statusCode = 400;
+    throw error;
+  }
+  updateBatchShare(batch.id, {
+    share_status: "pending",
+    share_url: batch.share_url,
+    share_pwd: batch.share_pwd,
+    share_file_id: batch.share_file_id,
+    share_error: null,
+    shared_at: batch.shared_at
+  });
+  const fileName = shareFileName(batch);
+  try {
+    const result = await new Pan123Client(pan123ClientConfig()).uploadAndShare({
+      fileName,
+      content: batch.export_json
+    });
+    const sharedAt = now();
+    updateBatchShare(batch.id, {
+      share_status: "ok",
+      share_url: result.url,
+      share_pwd: result.pwd,
+      share_file_id: result.fileId,
+      share_error: null,
+      shared_at: sharedAt
+    });
+    return {
+      status: "ok",
+      url: result.url,
+      pwd: result.pwd,
+      file_id: result.fileId,
+      message: result.message,
+      shared_at: sharedAt
+    };
+  } catch (error) {
+    updateBatchShare(batch.id, {
+      share_status: "failed",
+      share_url: batch.share_url,
+      share_pwd: batch.share_pwd,
+      share_file_id: batch.share_file_id,
+      share_error: error.message,
+      shared_at: batch.shared_at
+    });
+    throw error;
+  }
+}
+
 app.post("/api/auth/login", (req, res) => {
   const { username, password } = req.body || {};
   const user = db.prepare("SELECT * FROM users WHERE username = ?").get(username || "");
@@ -652,6 +916,7 @@ app.post("/api/front/take", requireAuth, async (req, res) => {
   try {
     const requested = Math.max(1, Math.min(Number(req.body.count || 1), 500));
     const validate = req.body.validate !== false;
+    const delivery = req.body.delivery === "kanwang_share" ? "kanwang_share" : "download";
     const profile = assertAssignedProfile(req, req.body.profile_id);
     if (!profile) return res.status(403).json({ error: "没有可用的 Sub2API 账号分配" });
     const config = profileForClient(profile);
@@ -690,8 +955,8 @@ app.post("/api/front/take", requireAuth, async (req, res) => {
       INSERT INTO take_batches (
         id, requested_count, issued_count, validate_requested, validation_status,
         remote_move_status, export_json, created_by, created_at,
-        user_id, profile_id, profile_name
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        user_id, profile_id, profile_name, delivery_method, share_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertRecord = db.prepare(`
       INSERT INTO take_records (
@@ -713,7 +978,9 @@ app.post("/api/front/take", requireAuth, async (req, res) => {
         createdAt,
         req.user.uid,
         profile.id,
-        profile.name
+        profile.name,
+        delivery,
+        delivery === "kanwang_share" ? "pending" : "not_requested"
       );
       for (const account of selected) {
         insertRecord.run(
@@ -737,8 +1004,22 @@ app.post("/api/front/take", requireAuth, async (req, res) => {
     });
     tx();
 
+    let share = { status: delivery === "kanwang_share" ? "pending" : "not_requested" };
+    if (delivery === "kanwang_share") {
+      const batch = db.prepare("SELECT * FROM take_batches WHERE id = ?").get(batchId);
+      try {
+        share = await shareBatchToPan(batch);
+      } catch (error) {
+        share = {
+          status: "failed",
+          error: error.message
+        };
+      }
+    }
+
     res.json({
       batch_id: batchId,
+      delivery,
       profile: publicProfile(profile),
       requested_count: requested,
       issued_count: selected.length,
@@ -746,6 +1027,7 @@ app.post("/api/front/take", requireAuth, async (req, res) => {
       validation_message: validationMessage,
       remote_move_status: moveStatus,
       download_url: `/api/take/${batchId}/download`,
+      share,
       accounts: selected.map((account) => ({
         id: account.id,
         name: account.name,
@@ -771,6 +1053,18 @@ app.post("/api/take/:id/restore", requireAuth, async (req, res) => {
   }
 });
 
+app.post("/api/take/:id/share", requireAuth, async (req, res) => {
+  try {
+    const batch = db.prepare("SELECT * FROM take_batches WHERE id = ?").get(req.params.id);
+    if (!batch) return res.status(404).json({ error: "take batch not found" });
+    if (!canAccessBatch(req, batch)) return res.status(403).json({ error: "cannot share another user's batch" });
+    const share = await shareBatchToPan(batch);
+    res.json({ ok: true, batch_id: batch.id, share });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
 app.get("/api/take/:id/download", requireAuth, (req, res) => {
   const row = db.prepare("SELECT * FROM take_batches WHERE id = ?").get(req.params.id);
   if (!row) return res.status(404).json({ error: "取号批次不存在" });
@@ -785,7 +1079,8 @@ app.get("/api/take/:id/download", requireAuth, (req, res) => {
 app.get("/api/front/records", requireAuth, (req, res) => {
   const batches = db.prepare(`
     SELECT id, profile_id, profile_name, requested_count, issued_count, validate_requested,
-           validation_status, remote_move_status, restore_status, restored_at, created_at
+           validation_status, remote_move_status, restore_status, restored_at, delivery_method,
+           share_status, share_url, share_pwd, share_error, shared_at, created_at
     FROM take_batches
     WHERE user_id = ?
     ORDER BY created_at DESC
@@ -804,6 +1099,58 @@ app.get("/api/front/records", requireAuth, (req, res) => {
 
 app.get("/api/admin/overview", requireAuth, requireAdmin, (req, res) => {
   res.json(adminOverview());
+});
+
+app.get("/api/admin/pan123/status", requireAuth, requireAdmin, (req, res) => {
+  res.json(pan123PublicStatus());
+});
+
+app.post("/api/admin/pan123/config", requireAuth, requireAdmin, (req, res) => {
+  try {
+    savePan123Config(req.body || {});
+    res.json({ ok: true, status: pan123PublicStatus() });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post("/api/admin/pan123/login", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    if (req.body?.config) savePan123Config(req.body.config);
+    const status = await loginPan123WithConfiguredMethod(req.body?.method);
+    res.json({ ok: true, status });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post("/api/admin/pan123/login-api", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    savePan123Config({ ...(req.body?.config || pan123StoredConfig()), login_method: "api" });
+    const status = await loginPan123WithApi();
+    res.json({ ok: true, status });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post("/api/admin/pan123/login-web", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    savePan123Config({ ...(req.body?.config || pan123StoredConfig()), login_method: "playwright" });
+    const status = await loginPan123WithPlaywright();
+    res.json({ ok: true, status });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post("/api/admin/pan123/login-code", requireAuth, requireAdmin, async (req, res) => {
+  res.status(410).json({ error: "123云盘登录已改为 Playwright 账密网页登录，请使用网页登录按钮" });
+});
+
+app.post("/api/admin/pan123/logout", requireAuth, requireAdmin, (req, res) => {
+  setSetting("pan123_auth", {});
+  res.json({ ok: true, status: pan123PublicStatus() });
 });
 
 app.get("/api/admin/profiles", requireAuth, requireAdmin, (req, res) => {
@@ -960,7 +1307,9 @@ app.put("/api/admin/users/:id", requireAuth, requireAdmin, (req, res) => {
 app.get("/api/admin/records", requireAuth, requireAdmin, (req, res) => {
   const batches = db.prepare(`
     SELECT b.id, b.user_id, b.profile_id, b.profile_name, b.requested_count, b.issued_count,
-           b.validate_requested, b.validation_status, b.remote_move_status, b.restore_status, b.restored_at, b.created_by, b.created_at,
+           b.validate_requested, b.validation_status, b.remote_move_status, b.restore_status, b.restored_at,
+           b.delivery_method, b.share_status, b.share_url, b.share_pwd, b.share_error, b.shared_at,
+           b.created_by, b.created_at,
            u.username
     FROM take_batches b
     LEFT JOIN users u ON u.id = b.user_id
