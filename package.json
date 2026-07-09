@@ -1,0 +1,19 @@
+{
+  "name": "sub2api-picker",
+  "version": "1.0.0",
+  "description": "Sub2API account picker with SQLite, validation, export, and Docker deployment.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.2.0",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

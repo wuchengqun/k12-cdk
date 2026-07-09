@@ -1,0 +1,22 @@
+services:
+  sub2api-picker:
+    build: .
+    container_name: sub2api-picker
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      APP_USERNAME: ${APP_USERNAME:-admin}
+      APP_PASSWORD: ${APP_PASSWORD:-admin123456}
+      FRONT_USERNAME: ${FRONT_USERNAME:-user}
+      FRONT_PASSWORD: ${FRONT_PASSWORD:-user123456}
+      APP_SECRET: ${APP_SECRET:-change-this-to-a-long-random-string}
+      SUB2API_URL: ${SUB2API_URL:-}
+      SUB2API_EMAIL: ${SUB2API_EMAIL:-}
+      SUB2API_PASSWORD: ${SUB2API_PASSWORD:-}
+      DB_PATH: /data/app.db
+    volumes:
+      - sub2api-picker-data:/data
+
+volumes:
+  sub2api-picker-data:
