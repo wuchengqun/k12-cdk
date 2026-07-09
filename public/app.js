@@ -470,6 +470,14 @@ function pan123View() {
       </div>
       <form id="pan123-config-form" class="form-grid compact-form">
         <div class="field">
+          <label for="pan123-account">123 云盘账号</label>
+          <input id="pan123-account" name="account" autocomplete="username" value="${escapeHtml(config.account || "")}" />
+        </div>
+        <div class="field">
+          <label for="pan123-password">123 云盘密码</label>
+          <input id="pan123-password" name="password" type="password" autocomplete="current-password" placeholder="${config.has_password ? "已从配置文件读取，留空不修改" : ""}" />
+        </div>
+        <div class="field">
           <label for="pan123-login-method">登录方式</label>
           <select id="pan123-login-method" name="login_method">
             <option value="api" ${loginMethod === "api" ? "selected" : ""}>接口登录</option>
@@ -805,11 +813,14 @@ function userPayloadFromForm(form) {
 
 function pan123ConfigPayload(form) {
   const timeout = Number(form.elements.playwright_timeout_ms.value || 90000);
-  return {
+  const payload = {
+    account: form.elements.account.value,
     login_method: form.elements.login_method.value === "playwright" ? "playwright" : "api",
     playwright_headless: Boolean(form.elements.playwright_headless.checked),
     playwright_timeout_ms: Number.isFinite(timeout) ? timeout : 90000
   };
+  if (form.elements.password.value) payload.password = form.elements.password.value;
+  return payload;
 }
 
 async function refreshAll() {

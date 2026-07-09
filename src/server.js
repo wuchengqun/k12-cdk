@@ -596,15 +596,31 @@ function pan123StoredConfig() {
   };
 }
 
+function pan123Credentials() {
+  const saved = getSetting("pan123_config", {}) || {};
+  return {
+    account: String(saved.account || process.env.PAN123_ACCOUNT || "").trim(),
+    password: String(saved.password || process.env.PAN123_PASSWORD || "")
+  };
+}
+
 function pan123PublicConfig() {
-  return pan123StoredConfig();
+  const credentials = pan123Credentials();
+  return {
+    ...pan123StoredConfig(),
+    account: credentials.account,
+    has_password: Boolean(credentials.password)
+  };
 }
 
 function savePan123Config(body = {}) {
   const current = pan123StoredConfig();
+  const saved = getSetting("pan123_config", {}) || {};
   const requestedMethod = String(body.login_method || body.loginMethod || "").trim().toLowerCase();
   const hasHeadless = Object.prototype.hasOwnProperty.call(body, "playwright_headless")
     || Object.prototype.hasOwnProperty.call(body, "playwrightHeadless");
+  const hasAccount = Object.prototype.hasOwnProperty.call(body, "account");
+  const hasPassword = Object.prototype.hasOwnProperty.call(body, "password") && String(body.password || "") !== "";
   const requestedHeadless = Object.prototype.hasOwnProperty.call(body, "playwright_headless")
     ? body.playwright_headless
     : body.playwrightHeadless;
@@ -617,13 +633,18 @@ function savePan123Config(body = {}) {
     playwright_headless: hasHeadless ? boolFromValue(requestedHeadless, current.playwright_headless) : current.playwright_headless,
     playwright_timeout_ms: Number.isFinite(timeout) && timeout > 0 ? Math.min(Math.max(timeout, 10000), 300000) : current.playwright_timeout_ms
   };
+  if (hasAccount || saved.account) config.account = hasAccount ? String(body.account || "").trim() : String(saved.account || "").trim();
+  if (hasPassword || saved.password) config.password = hasPassword ? String(body.password || "") : String(saved.password || "");
   setSetting("pan123_config", config);
   return config;
 }
 
 function pan123ClientConfig(extra = {}) {
   const saved = pan123EffectiveAuth();
+  const credentials = pan123Credentials();
   return {
+    account: credentials.account,
+    password: credentials.password,
     token: saved.token,
     cookie: saved.cookie,
     loginUuid: saved.loginUuid,
@@ -645,10 +666,10 @@ function pan123EffectiveAuth() {
 
 function pan123PublicStatus() {
   const saved = pan123EffectiveAuth();
-  const account = process.env.PAN123_ACCOUNT || "";
+  const credentials = pan123Credentials();
   return {
-    account: maskText(account),
-    configured: Boolean(account && process.env.PAN123_PASSWORD),
+    account: maskText(credentials.account),
+    configured: Boolean(credentials.account && credentials.password),
     logged_in: Boolean(saved.token || saved.cookie),
     has_token: Boolean(saved.token),
     has_cookie: Boolean(saved.cookie),
@@ -673,11 +694,11 @@ function savePan123Auth({ token = "", cookie = "", loginUuid = "", userInfo = nu
 }
 
 async function loginPan123WithApi() {
-  const client = new Pan123Client({
+  const client = new Pan123Client(pan123ClientConfig({
     token: "",
     cookie: "",
     loginUuid: process.env.PAN123_LOGIN_UUID || ""
-  });
+  }));
   const token = await client.login();
   const authedClient = new Pan123Client({
     token: token || "",
@@ -696,7 +717,10 @@ async function loginPan123WithApi() {
 
 async function loginPan123WithPlaywright() {
   const config = pan123StoredConfig();
+  const credentials = pan123Credentials();
   const result = await loginPan123ByPlaywright({
+    account: credentials.account,
+    password: credentials.password,
     headless: config.playwright_headless,
     timeoutMs: config.playwright_timeout_ms
   });
@@ -760,11 +784,21 @@ async function shareBatchToPan(batch) {
     error.statusCode = 400;
     throw error;
   }
-  const auth = pan123EffectiveAuth();
+  let auth = pan123EffectiveAuth();
   if (!auth.token && !auth.cookie) {
-    const error = new Error("请先在后台 123云盘 页面点击 Playwright 网页登录，再使用卡网分享");
-    error.statusCode = 400;
-    throw error;
+    const credentials = pan123Credentials();
+    if (!credentials.account || !credentials.password) {
+      const error = new Error("123云盘账号或密码未配置，请检查配置文件里的 PAN123_ACCOUNT / PAN123_PASSWORD");
+      error.statusCode = 400;
+      throw error;
+    }
+    await loginPan123WithConfiguredMethod();
+    auth = pan123EffectiveAuth();
+    if (!auth.token && !auth.cookie) {
+      const error = new Error("123云盘登录成功后没有拿到可用于分享的凭证，请到后台 123云盘 页面重新登录");
+      error.statusCode = 400;
+      throw error;
+    }
   }
   updateBatchShare(batch.id, {
     share_status: "pending",
