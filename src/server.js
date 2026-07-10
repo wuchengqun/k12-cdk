@@ -234,6 +234,7 @@ function parseAccountTestResult(raw) {
 function accountTestSummary(results) {
   const total = results.length;
   const failedResults = results.filter((result) => !result.ok);
+  const validResults = results.filter((result) => result.ok);
   const success = total - failedResults.length;
   const failed = failedResults.length;
   const allIssues = failedResults.map((result) => `${result.account.id}: ${result.error || "账号测试失败"}`);
@@ -248,6 +249,7 @@ function accountTestSummary(results) {
     success,
     failed,
     issues: allIssues,
+    validAccounts: validResults.map((result) => result.account),
     invalidAccounts: failedResults.map((result) => result.account)
   };
 }
@@ -273,6 +275,50 @@ async function testRemoteAccounts(remote, accounts) {
 async function validateRemoteAccounts(remote, accounts) {
   if (!accounts.length) return accountTestSummary([]);
   return accountTestSummary(await testRemoteAccounts(remote, accounts));
+}
+
+function refillValidationStatus(selectedCount, requested) {
+  if (selectedCount >= requested) return "ok";
+  if (selectedCount > 0) return "partial";
+  return "failed";
+}
+
+function refillValidationMessage(summary, selectedCount, requested) {
+  const skipped = summary?.failed || 0;
+  const checked = summary?.total || 0;
+  const shortage = Math.max(0, requested - selectedCount);
+  const parts = [
+    `批量验活完成：可用 ${selectedCount}，跳过失败 ${skipped}，目标 ${requested}，实际检查 ${checked}`
+  ];
+  if (shortage > 0) parts.push(`正常账号不足，还差 ${shortage} 个`);
+  if (summary?.issues?.length) {
+    parts.push(`失败明细：${summary.issues.slice(0, 3).join("；")}${summary.issues.length > 3 ? "；..." : ""}`);
+  }
+  return parts.join("。");
+}
+
+async function selectValidatedAccounts(remote, candidates, requested) {
+  const selected = [];
+  const results = [];
+  const chunkSize = 20;
+
+  for (let index = 0; index < candidates.length && selected.length < requested; index += chunkSize) {
+    const chunk = candidates.slice(index, index + chunkSize);
+    const chunkResults = await testRemoteAccounts(remote, chunk);
+    results.push(...chunkResults);
+    for (const result of chunkResults) {
+      if (result.ok) selected.push(result.account);
+      if (selected.length >= requested) break;
+    }
+  }
+
+  const summary = accountTestSummary(results);
+  return {
+    selected: selected.slice(0, requested),
+    summary,
+    status: refillValidationStatus(selected.length, requested),
+    message: refillValidationMessage(summary, Math.min(selected.length, requested), requested)
+  };
 }
 
 function getIssuedAccountIds(profileId) {
@@ -329,10 +375,14 @@ async function candidateAccounts(profile, limit) {
     throw error;
   }
   const issued = getIssuedAccountIds(profile.id);
-  return (await clientForProfile(profile).listAccountsFromGroups(config.source_group_ids))
+  const unique = new Map();
+  for (const account of (await clientForProfile(profile).listAccountsFromGroups(config.source_group_ids))
     .filter(isUsableAccount)
-    .filter((account) => !issued.has(Number(account.id)))
-    .slice(0, limit);
+    .filter((account) => !issued.has(Number(account.id)))) {
+    unique.set(Number(account.id), account);
+  }
+  const accounts = [...unique.values()];
+  return Number.isFinite(limit) ? accounts.slice(0, limit) : accounts;
 }
 
 async function remainingAvailability(profile) {
@@ -355,13 +405,23 @@ async function remainingAvailability(profile) {
     groups.push({
       id: groupId,
       name: groupNames.get(Number(groupId)) || `Group ${groupId}`,
-      remaining_count: accounts.length
+      account_ids: accounts.map((account) => Number(account.id))
     });
   }
+  const summary = await validateRemoteAccounts(remote, [...unique.values()]);
+  const validIds = new Set(summary.validAccounts.map((account) => Number(account.id)));
   return {
     profile: publicProfile(profile),
-    total_remaining: unique.size,
-    groups
+    total_remaining: validIds.size,
+    checked_count: summary.total,
+    skipped_count: summary.failed,
+    validation_status: summary.failed ? "partial" : "ok",
+    validation_message: `已验活可提取账号 ${validIds.size} 个，跳过失败 ${summary.failed} 个`,
+    groups: groups.map((group) => ({
+      id: group.id,
+      name: group.name,
+      remaining_count: group.account_ids.filter((id) => validIds.has(id)).length
+    }))
   };
 }
 
@@ -947,30 +1007,31 @@ app.post("/api/front/validate", requireAuth, async (req, res) => {
     const requested = Math.max(1, Math.min(Number(req.body.count || 20), 500));
     const profile = assertAssignedProfile(req, req.body.profile_id);
     if (!profile) return res.status(403).json({ error: "没有可用的 Sub2API 账号分配" });
-    const accounts = await candidateAccounts(profile, requested);
-    const ids = accounts.map((account) => account.id);
-    let status = "skipped";
-    let message = "没有可验活账号";
-    let summary = null;
-    if (ids.length) {
-      summary = await validateRemoteAccounts(clientForProfile(profile), accounts);
-      status = summary.status;
-      message = summary.message;
-    }
+    const candidates = await candidateAccounts(profile);
+    const result = candidates.length
+      ? await selectValidatedAccounts(clientForProfile(profile), candidates, requested)
+      : {
+          selected: [],
+          summary: accountTestSummary([]),
+          status: "skipped",
+          message: "没有可验活账号"
+        };
     const runId = crypto.randomUUID();
     db.prepare(`
       INSERT INTO validation_runs (id, requested_count, checked_count, status, message, created_by, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(runId, requested, ids.length, status, message, req.user.username, now());
+    `).run(runId, requested, result.selected.length, result.status, result.message, req.user.username, now());
     res.json({
       id: runId,
       profile: publicProfile(profile),
-      status,
-      message,
-      checked_count: ids.length,
-      success_count: summary?.success || 0,
-      failed_count: summary?.failed || 0,
-      accounts: accounts.map((account) => ({
+      status: result.status,
+      message: result.message,
+      checked_count: result.selected.length,
+      success_count: result.selected.length,
+      failed_count: result.summary.failed,
+      skipped_count: result.summary.failed,
+      total_checked_count: result.summary.total,
+      accounts: result.selected.map((account) => ({
         id: account.id,
         name: account.name,
         platform: account.platform,
@@ -992,23 +1053,25 @@ app.post("/api/front/take", requireAuth, async (req, res) => {
     if (!profile) return res.status(403).json({ error: "没有可用的 Sub2API 账号分配" });
     const config = profileForClient(profile);
     const remote = clientForProfile(profile);
-    const selected = await candidateAccounts(profile, requested);
-    const ids = selected.map((account) => account.id);
-    if (!ids.length) {
-      return res.status(400).json({ error: "当前取号分组没有可提取账号，已停止取号，不会生成下载文件" });
-    }
-
+    const candidates = await candidateAccounts(profile);
+    let selected = candidates.slice(0, requested);
     let validationStatus = validate ? "skipped" : "disabled";
     let validationMessage = validate ? "没有可验活账号" : "未启用验活";
-    if (validate && ids.length) {
-      const summary = await validateRemoteAccounts(remote, selected);
-      validationStatus = summary.status;
-      validationMessage = summary.message;
-      if (summary.failed > 0) {
-        const error = new Error(`取号前批量验活失败，已停止取号。${summary.message}`);
-        error.statusCode = 400;
-        throw error;
-      }
+    let skippedCount = 0;
+    let totalCheckedCount = 0;
+
+    if (validate && candidates.length) {
+      const result = await selectValidatedAccounts(remote, candidates, requested);
+      selected = result.selected;
+      validationStatus = result.status;
+      validationMessage = result.message;
+      skippedCount = result.summary.failed;
+      totalCheckedCount = result.summary.total;
+    }
+
+    const ids = selected.map((account) => account.id);
+    if (!ids.length) {
+      return res.status(400).json({ error: validate ? "当前取号分组没有验活正常的可提取账号，已停止取号，不会生成下载文件" : "当前取号分组没有可提取账号，已停止取号，不会生成下载文件" });
     }
 
     let moveStatus = "未移动";
@@ -1041,6 +1104,7 @@ app.post("/api/front/take", requireAuth, async (req, res) => {
         user_id, profile_id, profile_name
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+    const recordValidationStatus = validate ? "ok" : validationStatus;
     const tx = db.transaction(() => {
       insertBatch.run(
         batchId,
@@ -1069,7 +1133,7 @@ app.post("/api/front/take", requireAuth, async (req, res) => {
           account.schedulable === false ? 0 : 1,
           JSON.stringify(sourceGroupIdsForRecord(account, config.source_group_ids)),
           JSON.stringify(movedToGroupIds),
-          validationStatus,
+          recordValidationStatus,
           validationMessage,
           createdAt,
           req.user.uid,
@@ -1101,6 +1165,8 @@ app.post("/api/front/take", requireAuth, async (req, res) => {
       issued_count: selected.length,
       validation_status: validationStatus,
       validation_message: validationMessage,
+      skipped_count: skippedCount,
+      total_checked_count: totalCheckedCount,
       remote_move_status: moveStatus,
       download_url: `/api/take/${batchId}/download`,
       share,

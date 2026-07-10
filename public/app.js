@@ -321,9 +321,9 @@ function availabilityPanel() {
     return `
       <div class="extractable-card loading">
         <div>
-          <p class="eyebrow">可提取数量（未验活）</p>
+          <p class="eyebrow">可提取数量（已验活）</p>
           <b>统计中</b>
-          <span>正在读取当前取号分组下的账号数量。</span>
+          <span>正在验活当前取号分组下的账号数量。</span>
         </div>
       </div>
     `;
@@ -332,7 +332,7 @@ function availabilityPanel() {
     return `
       <div class="extractable-card empty">
         <div>
-          <p class="eyebrow">可提取数量（未验活）</p>
+          <p class="eyebrow">可提取数量（已验活）</p>
           <b>-</b>
           <span>进入取号页会自动刷新，也可以点击“刷新可提取数量”。</span>
         </div>
@@ -342,9 +342,9 @@ function availabilityPanel() {
   return `
     <div class="extractable-card">
       <div class="availability-total">
-        <p class="eyebrow">可提取数量（未验活）</p>
+        <p class="eyebrow">可提取数量（已验活）</p>
         <b>${info.total_remaining}</b>
-        <span>当前 Sub2API 账号的取号分组可提取账号总数</span>
+        <span>当前 Sub2API 账号的取号分组验活正常账号总数</span>
       </div>
       <div class="availability-groups">
         <strong>分组明细</strong>
@@ -368,7 +368,7 @@ function takeView() {
       <div class="section-head">
         <div>
           <h2>取号</h2>
-          <p>先确认可提取数量（未验活），再输入数量，并选择下载 JSON 或卡网分享。</p>
+          <p>先确认可提取数量（已验活），再输入数量，并选择下载 JSON 或卡网分享。</p>
         </div>
       </div>
       ${availabilityPanel()}
@@ -919,7 +919,7 @@ function bindEvents() {
         method: "POST",
         body: JSON.stringify(payload)
       });
-      setMessage(`${data.message}，本次处理 ${data.checked_count} 个账号。`);
+      setMessage(`${data.message}，可用 ${data.checked_count} 个账号。`);
     } catch (error) {
       setMessage("", error.message);
     } finally {
@@ -945,7 +945,7 @@ function bindEvents() {
     setBusy(true);
     try {
       await refreshAvailability(profileId, { silent: true });
-      setMessage("可提取数量（未验活）已刷新。");
+      setMessage("可提取数量（已验活）已刷新。");
     } catch (error) {
       setMessage("", error.message);
     } finally {
