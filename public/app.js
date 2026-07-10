@@ -14,7 +14,10 @@ const state = {
   availabilityLoading: false,
   notice: "",
   error: "",
-  busy: false
+  busy: false,
+  busyMessage: "",
+  availabilityRequestId: 0,
+  lastShare: null
 };
 
 const app = document.getElementById("app");
@@ -52,9 +55,42 @@ function setMessage(notice = "", error = "") {
   render();
 }
 
-function setBusy(value) {
+function fullShareUrl(url, pwd) {
+  if (!url) return "";
+  if (!pwd) return url;
+  try {
+    const parsed = new URL(url, window.location.href);
+    parsed.searchParams.set("pwd", pwd);
+    parsed.hash = parsed.hash || "#";
+    return parsed.toString();
+  } catch {
+    const cleanUrl = String(url).replace(/#.*$/, "");
+    const joiner = cleanUrl.includes("?") ? "&" : "?";
+    return `${cleanUrl}${joiner}pwd=${encodeURIComponent(pwd)}#`;
+  }
+}
+
+function setBusy(value, message = "处理中，请稍候...") {
   state.busy = value;
+  state.busyMessage = value ? message : "";
   render();
+}
+
+function busyBanner() {
+  if (!state.busyMessage) return "";
+  return `<div class="notice loading-notice"><span class="spinner"></span>${escapeHtml(state.busyMessage)}</div>`;
+}
+
+function noticePanel() {
+  if (!state.notice) return "";
+  if (!state.lastShare?.fullUrl) return `<div class="notice">${escapeHtml(state.notice)}</div>`;
+  const disabled = state.busy ? "disabled" : "";
+  return `
+    <div class="notice notice-with-action">
+      <div class="notice-text">${escapeHtml(state.notice)}</div>
+      <button class="btn tiny ghost" type="button" data-copy-share="${escapeHtml(state.lastShare.fullUrl)}" ${disabled}>复制完整链接</button>
+    </div>
+  `;
 }
 
 async function copyText(text) {
@@ -96,29 +132,36 @@ async function loadAdmin() {
 async function loadAvailability(profileId = null) {
   const targetProfileId = Number(profileId || currentTakeProfileId() || 0);
   if (!targetProfileId) {
-    state.availability = null;
-    return;
+    return null;
   }
-  state.availability = await api(`/api/front/availability?profile_id=${targetProfileId}`);
+  return api(`/api/front/availability?profile_id=${targetProfileId}`);
 }
 
-async function refreshAvailability(profileId = null, { silent = false } = {}) {
+async function refreshAvailability(profileId = null, { renderStart = true } = {}) {
+  const requestId = state.availabilityRequestId + 1;
+  state.availabilityRequestId = requestId;
   state.availabilityLoading = true;
-  if (!silent) render();
+  if (renderStart) render();
   try {
-    await loadAvailability(profileId);
+    const availability = await loadAvailability(profileId);
+    if (requestId === state.availabilityRequestId) {
+      state.availability = availability;
+    }
+    return availability;
   } finally {
-    state.availabilityLoading = false;
+    if (requestId === state.availabilityRequestId) {
+      state.availabilityLoading = false;
+      render();
+    }
   }
 }
 
-async function refreshTakeAvailabilityIfPossible() {
-  if (!usableProfiles().length) {
-    state.availability = null;
+function startAvailabilityRefresh(profileId = null) {
+  refreshAvailability(profileId, { renderStart: true }).catch((error) => {
+    state.error = `号池数量刷新失败：${error.message}`;
     state.availabilityLoading = false;
-    return;
-  }
-  await refreshAvailability(null, { silent: true });
+    render();
+  });
 }
 
 async function boot() {
@@ -163,7 +206,7 @@ function loginView() {
           <label for="password">登录密码</label>
           <input id="password" name="password" type="password" autocomplete="current-password" required />
         </div>
-        <button class="btn primary wide" type="submit">登录</button>
+        <button class="btn primary wide" type="submit" ${state.busy ? "disabled" : ""}>${state.busy ? "登录中..." : "登录"}</button>
         <p class="hint">默认前台：user / user123456；默认后台：admin / admin123456</p>
         ${state.error ? `<div class="notice error">${escapeHtml(state.error)}</div>` : ""}
       </form>
@@ -198,8 +241,9 @@ function shellView() {
           </div>
           <div class="user-pill">${escapeHtml(state.user.role === "admin" ? "管理员" : "前台用户")}</div>
         </header>
+        ${busyBanner()}
         ${state.error ? `<div class="notice error">${escapeHtml(state.error)}</div>` : ""}
-        ${state.notice ? `<div class="notice">${escapeHtml(state.notice)}</div>` : ""}
+        ${noticePanel()}
         ${state.mode === "admin" ? adminView() : frontView()}
       </main>
     </section>
@@ -315,15 +359,29 @@ function profileSelect() {
   `;
 }
 
+function exportFormatOptions() {
+  return [
+    ["sub2api", "Sub2API"],
+    ["cpa", "CPA"],
+    ["cockpit", "Cockpit"],
+    ["9router", "9router"]
+  ].map(([value, label], index) => `
+    <label>
+      <input type="radio" name="export_format" value="${value}" ${index === 0 ? "checked" : ""} />
+      <span>${label}</span>
+    </label>
+  `).join("");
+}
+
 function availabilityPanel() {
   const info = state.availability;
   if (state.availabilityLoading && !info) {
     return `
       <div class="extractable-card loading">
         <div>
-          <p class="eyebrow">可提取数量（已验活）</p>
+          <p class="eyebrow">号池剩余（未验活）</p>
           <b>统计中</b>
-          <span>正在验活当前取号分组下的账号数量。</span>
+          <span>正在读取当前取号分组下的账号数量，不会验活。</span>
         </div>
       </div>
     `;
@@ -332,9 +390,9 @@ function availabilityPanel() {
     return `
       <div class="extractable-card empty">
         <div>
-          <p class="eyebrow">可提取数量（已验活）</p>
+          <p class="eyebrow">号池剩余（未验活）</p>
           <b>-</b>
-          <span>进入取号页会自动刷新，也可以点击“刷新可提取数量”。</span>
+          <span>进入取号页会自动读取号池数量；点击“只验活”或“开始取号”时才验活。</span>
         </div>
       </div>
     `;
@@ -342,9 +400,10 @@ function availabilityPanel() {
   return `
     <div class="extractable-card">
       <div class="availability-total">
-        <p class="eyebrow">可提取数量（已验活）</p>
+        <p class="eyebrow">号池剩余（未验活）</p>
         <b>${info.total_remaining}</b>
-        <span>当前 Sub2API 账号的取号分组验活正常账号总数</span>
+        <span>当前 Sub2API 账号取号分组内尚未取出的账号总数</span>
+        ${state.availabilityLoading ? `<span class="loading-inline"><span class="spinner"></span>正在刷新号池数量...</span>` : ""}
       </div>
       <div class="availability-groups">
         <strong>分组明细</strong>
@@ -357,6 +416,9 @@ function availabilityPanel() {
 }
 
 function takeView() {
+  const taking = state.busyMessage.includes("取号");
+  const validating = state.busyMessage.includes("验活");
+  const refreshingAvailability = state.availabilityLoading;
   if (!profiles().length) {
     return `<section class="panel empty"><h2>暂无可用账号</h2><p>请联系管理员给你分配 Sub2API 账号。</p></section>`;
   }
@@ -368,7 +430,7 @@ function takeView() {
       <div class="section-head">
         <div>
           <h2>取号</h2>
-          <p>先确认可提取数量（已验活），再输入数量，并选择下载 JSON 或卡网分享。</p>
+          <p>默认只显示号池数量，不自动验活；点击只验活或开始取号时再验活。</p>
         </div>
       </div>
       ${availabilityPanel()}
@@ -385,23 +447,29 @@ function takeView() {
           <input name="validate" type="checkbox" checked />
           <span>取号前批量验活</span>
         </label>
+        <div class="field export-format-field">
+          <label>导出格式</label>
+          <div class="segmented format-segmented">
+            ${exportFormatOptions()}
+          </div>
+        </div>
         <div class="field delivery-field">
           <label>取号后处理</label>
           <div class="segmented">
             <label>
-              <input type="radio" name="delivery" value="download" checked />
-              <span>下载 JSON</span>
+              <input type="radio" name="delivery" value="kanwang_share" checked />
+              <span>卡网分享</span>
             </label>
             <label>
-              <input type="radio" name="delivery" value="kanwang_share" />
-              <span>卡网分享</span>
+              <input type="radio" name="delivery" value="download" />
+              <span>下载 JSON</span>
             </label>
           </div>
         </div>
         <div class="actions">
-          <button class="btn primary" ${state.busy ? "disabled" : ""} type="submit">开始取号</button>
-          <button class="btn ghost" ${state.busy ? "disabled" : ""} type="button" id="validate-button">只验活</button>
-          <button class="btn ghost" ${state.busy || state.availabilityLoading ? "disabled" : ""} type="button" id="refresh-availability">刷新可提取数量</button>
+          <button class="btn primary" ${state.busy ? "disabled" : ""} type="submit">${taking ? "取号中..." : "开始取号"}</button>
+          <button class="btn ghost" ${state.busy ? "disabled" : ""} type="button" id="validate-button">${validating ? "验活中..." : "只验活"}</button>
+          <button class="btn ghost" ${refreshingAvailability ? "disabled" : ""} type="button" id="refresh-availability">${refreshingAvailability ? "刷新中..." : "刷新号池数量"}</button>
         </div>
       </form>
     </section>
@@ -552,6 +620,7 @@ function profilesView() {
 
 function profileForm(profile = null) {
   const id = profile?.id || "";
+  const disabled = state.busy ? "disabled" : "";
   return `
     <form class="profile-form form-grid" data-profile-form="${id}">
       <div class="field">
@@ -579,9 +648,9 @@ function profileForm(profile = null) {
         <span>取号后移动到已取号分组</span>
       </label>
       <div class="actions">
-        <button class="btn primary" type="submit" ${state.busy ? "disabled" : ""}>${profile ? "保存账号" : "新增账号"}</button>
-        ${profile ? `<button class="btn ghost" type="button" data-test-profile="${profile.id}">测试连接</button>
-        <button class="btn ghost" type="button" data-sync-profile="${profile.id}">同步分组</button>` : ""}
+        <button class="btn primary" type="submit" ${disabled}>${profile ? "保存账号" : "新增账号"}</button>
+        ${profile ? `<button class="btn ghost" type="button" data-test-profile="${profile.id}" ${disabled}>测试连接</button>
+        <button class="btn ghost" type="button" data-sync-profile="${profile.id}" ${disabled}>同步分组</button>` : ""}
       </div>
     </form>
   `;
@@ -684,16 +753,18 @@ function canRestoreBatch(batch) {
 
 function shareText(batch) {
   if (!batch.share_url) return "";
-  return `${batch.share_url}${batch.share_pwd ? ` 提取码: ${batch.share_pwd}` : ""}`;
+  return batch.share_full_url || batch.full_url || fullShareUrl(batch.share_url, batch.share_pwd);
 }
 
 function shareCell(batch) {
   const status = batch.share_status || "not_requested";
+  const disabled = state.busy ? "disabled" : "";
   if (status === "ok" && batch.share_url) {
+    const shareHref = shareText(batch);
     return `
       <div class="share-cell">
-        <a class="btn tiny" href="${escapeHtml(batch.share_url)}" target="_blank" rel="noreferrer">打开</a>
-        <button class="btn tiny ghost" type="button" data-copy-share="${escapeHtml(shareText(batch))}">复制</button>
+        <a class="btn tiny" href="${escapeHtml(shareHref)}" target="_blank" rel="noreferrer">打开</a>
+        <button class="btn tiny ghost" type="button" data-copy-share="${escapeHtml(shareText(batch))}" ${disabled}>复制完整链接</button>
         ${batch.share_pwd ? `<span class="muted">码 ${escapeHtml(batch.share_pwd)}</span>` : ""}
       </div>
     `;
@@ -702,20 +773,30 @@ function shareCell(batch) {
     return `
       <div class="share-cell">
         <span class="muted">失败：${escapeHtml(batch.share_error || "分享失败")}</span>
-        <button class="btn tiny" type="button" data-share-batch="${batch.id}">重试</button>
+        <button class="btn tiny" type="button" data-share-batch="${batch.id}" ${disabled}>重试</button>
       </div>
     `;
   }
   if (status === "pending") return `<span class="muted">分享中</span>`;
-  return `<button class="btn tiny" type="button" data-share-batch="${batch.id}">卡网分享</button>`;
+  return `<button class="btn tiny" type="button" data-share-batch="${batch.id}" ${disabled}>卡网分享</button>`;
+}
+
+function exportFormatName(format) {
+  return {
+    sub2api: "Sub2API",
+    cpa: "CPA",
+    cockpit: "Cockpit",
+    "9router": "9router"
+  }[format || "sub2api"] || format || "Sub2API";
 }
 
 function batchTable(rows, showUser) {
+  const disabled = state.busy ? "disabled" : "";
   return `
     <table>
       <thead>
         <tr>
-          <th>时间</th>${showUser ? "<th>用户</th>" : ""}<th>Sub2API</th><th>数量</th><th>验活</th><th>处理</th><th>分享</th><th>挪回</th><th>下载</th>${showUser ? "<th>删除</th>" : ""}
+          <th>时间</th>${showUser ? "<th>用户</th>" : ""}<th>Sub2API</th><th>数量</th><th>格式</th><th>验活</th><th>处理</th><th>分享</th><th>挪回</th><th>下载</th>${showUser ? "<th>删除</th>" : ""}
         </tr>
       </thead>
       <tbody>
@@ -725,18 +806,19 @@ function batchTable(rows, showUser) {
             ${showUser ? `<td>${escapeHtml(batch.username || batch.created_by || "")}</td>` : ""}
             <td>${escapeHtml(batch.profile_name || "-")}</td>
             <td>${batch.issued_count}/${batch.requested_count}</td>
+            <td>${escapeHtml(exportFormatName(batch.export_format))}</td>
             <td>${escapeHtml(batch.validation_status || "")}</td>
             <td>${escapeHtml(batch.restore_status || batch.remote_move_status || "")}</td>
             <td>${shareCell(batch)}</td>
             <td>
               ${canRestoreBatch(batch)
-                ? `<button class="btn tiny" type="button" data-restore-batch="${batch.id}">挪回</button>`
+                ? `<button class="btn tiny" type="button" data-restore-batch="${batch.id}" ${disabled}>挪回</button>`
                 : `<span class="muted">${batch.restore_status ? "已挪回" : "-"}</span>`}
             </td>
             <td><a class="btn tiny" href="/api/take/${batch.id}/download">下载</a></td>
-            ${showUser ? `<td><button class="btn tiny danger" type="button" data-delete-batch="${batch.id}">删除</button></td>` : ""}
+            ${showUser ? `<td><button class="btn tiny danger" type="button" data-delete-batch="${batch.id}" ${disabled}>删除</button></td>` : ""}
           </tr>
-        `).join("") || `<tr><td colspan="${showUser ? 10 : 8}" class="muted">暂无记录</td></tr>`}
+        `).join("") || `<tr><td colspan="${showUser ? 11 : 9}" class="muted">暂无记录</td></tr>`}
       </tbody>
     </table>
   `;
@@ -816,9 +898,15 @@ function bindEvents() {
       state.tab = state.mode === "admin" ? "adminHome" : "home";
       state.notice = "";
       state.error = "";
-      await refreshAll();
-      if (state.mode === "front" && state.tab === "take") await refreshTakeAvailabilityIfPossible();
-      render();
+      state.lastShare = null;
+      setBusy(true, "正在切换页面...");
+      try {
+        await refreshAll();
+      } catch (error) {
+        state.error = error.message;
+      } finally {
+        setBusy(false);
+      }
     });
   });
 
@@ -827,24 +915,41 @@ function bindEvents() {
       state.tab = button.dataset.tab;
       state.notice = "";
       state.error = "";
-      if (state.mode === "admin") await loadAdmin();
-      if (state.mode === "front") {
-        await loadFront();
-        if (state.tab === "take") await refreshTakeAvailabilityIfPossible();
+      state.lastShare = null;
+      if (state.mode === "front" && state.tab === "take") {
+        state.availability = null;
+        state.availabilityLoading = false;
+        render();
+        startAvailabilityRefresh();
+        return;
       }
-      render();
+      setBusy(true, "正在切换页面...");
+      try {
+        if (state.mode === "admin") await loadAdmin();
+        if (state.mode === "front") {
+          await loadFront();
+        }
+      } catch (error) {
+        state.error = error.message;
+      } finally {
+        setBusy(false);
+      }
     });
   });
 
   document.getElementById("logout-button")?.addEventListener("click", async () => {
+    setBusy(true, "正在退出登录...");
     await api("/api/auth/logout", { method: "POST", body: "{}" });
     state.user = null;
+    state.busy = false;
+    state.busyMessage = "";
     render();
   });
 
   document.getElementById("login-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
+    setBusy(true, "正在登录...");
     try {
       const data = await api("/api/auth/login", {
         method: "POST",
@@ -860,36 +965,45 @@ function bindEvents() {
       setMessage("");
     } catch (error) {
       setMessage("", error.message);
+    } finally {
+      setBusy(false);
     }
   });
 
   document.getElementById("take-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
+    state.lastShare = null;
     const payload = {
       profile_id: Number(form.get("profile_id")),
       count: Number(form.get("count")),
       validate: form.get("validate") === "on",
+      export_format: form.get("export_format") || "sub2api",
       delivery: form.get("delivery") || "download"
     };
-    setBusy(true);
+    setBusy(true, "正在取号并处理导出...");
     try {
       const data = await api("/api/front/take", {
         method: "POST",
         body: JSON.stringify(payload)
       });
       await loadFront();
-      await refreshAvailability(payload.profile_id, { silent: true });
+      state.availability = null;
+      state.availabilityLoading = false;
+      startAvailabilityRefresh(payload.profile_id);
       if (!Number(data.issued_count || 0) || !data.download_url) {
         setMessage("", "当前取号分组没有可提取账号，已停止取号，不会生成下载文件");
         return;
       }
-      const baseMessage = `取号完成：${data.issued_count}/${data.requested_count}\n${data.validation_message}\n${data.remote_move_status}`;
+      const baseMessage = `取号完成：${data.issued_count}/${data.requested_count}\n导出格式：${data.export_format_label || data.export_format || payload.export_format}\n${data.validation_message}\n${data.remote_move_status}`;
       if (payload.delivery === "kanwang_share") {
         if (data.share?.status === "ok") {
-          state.notice = `${baseMessage}\n卡网分享：${data.share.message || `${data.share.url} 提取码: ${data.share.pwd || ""}`}`;
+          const fullUrl = data.share.full_url || fullShareUrl(data.share.url, data.share.pwd);
+          state.lastShare = { fullUrl };
+          state.notice = `${baseMessage}\n卡网分享：${fullUrl}`;
           state.error = "";
         } else {
+          state.lastShare = null;
           state.notice = baseMessage;
           state.error = `卡网分享失败：${data.share?.error || "请稍后在记录里重试"}`;
         }
@@ -913,7 +1027,7 @@ function bindEvents() {
       profile_id: Number(form.elements.profile_id.value),
       count: Number(form.elements.count.value)
     };
-    setBusy(true);
+    setBusy(true, "正在批量验活...");
     try {
       const data = await api("/api/front/validate", {
         method: "POST",
@@ -929,49 +1043,41 @@ function bindEvents() {
 
   document.getElementById("profile-id")?.addEventListener("change", async (event) => {
     const profileId = Number(event.currentTarget.value);
-    setBusy(true);
-    try {
-      await refreshAvailability(profileId, { silent: true });
-      setMessage("");
-    } catch (error) {
-      setMessage("", error.message);
-    } finally {
-      setBusy(false);
-    }
+    state.availability = null;
+    state.availabilityLoading = false;
+    state.notice = "";
+    state.error = "";
+    render();
+    startAvailabilityRefresh(profileId);
   });
 
   document.getElementById("refresh-availability")?.addEventListener("click", async () => {
     const profileId = currentTakeProfileId();
-    setBusy(true);
+    state.notice = "";
+    state.error = "";
     try {
-      await refreshAvailability(profileId, { silent: true });
-      setMessage("可提取数量（已验活）已刷新。");
+      await refreshAvailability(profileId, { renderStart: true });
+      setMessage("号池数量（未验活）已刷新。");
     } catch (error) {
       setMessage("", error.message);
-    } finally {
-      setBusy(false);
     }
   });
 
   document.querySelectorAll("[data-restore-batch]").forEach((button) => {
     button.addEventListener("click", async () => {
-      setBusy(true);
+      setBusy(true, "正在挪回账号...");
       try {
         const data = await api(`/api/take/${button.dataset.restoreBatch}/restore`, {
           method: "POST",
           body: "{}"
         });
         await refreshAll();
-        let availabilityMessage = "";
         if (state.mode === "front") {
-          try {
-            await refreshTakeAvailabilityIfPossible();
-          } catch (error) {
-            availabilityMessage = `\n可提取数量刷新失败：${error.message}`;
-          }
+          state.availability = null;
+          startAvailabilityRefresh();
         }
         const validationMessage = data.validation_message ? `\n${data.validation_message}` : "";
-        setMessage(`已挪回 ${data.restored_count} 个账号到原取号分组。${validationMessage}${availabilityMessage}`);
+        setMessage(`已挪回 ${data.restored_count} 个账号到原取号分组。${validationMessage}`);
       } catch (error) {
         setMessage("", error.message);
       } finally {
@@ -982,14 +1088,15 @@ function bindEvents() {
 
   document.querySelectorAll("[data-share-batch]").forEach((button) => {
     button.addEventListener("click", async () => {
-      setBusy(true);
+      setBusy(true, "正在生成卡网分享...");
       try {
         const data = await api(`/api/take/${button.dataset.shareBatch}/share`, {
           method: "POST",
           body: "{}"
         });
         await refreshAll();
-        setMessage(`卡网分享已生成：${data.share.message || `${data.share.url || ""} 提取码: ${data.share.pwd || ""}`}`);
+        const fullUrl = data.share.full_url || fullShareUrl(data.share.url, data.share.pwd);
+        setMessage(`卡网分享已生成：${fullUrl}`);
       } catch (error) {
         await refreshAll().catch(() => {});
         setMessage("", error.message);
@@ -1013,7 +1120,7 @@ function bindEvents() {
   document.getElementById("pan123-config-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const payload = pan123ConfigPayload(event.currentTarget);
-    setBusy(true);
+    setBusy(true, "正在保存 123 云盘配置...");
     try {
       const data = await api("/api/admin/pan123/config", {
         method: "POST",
@@ -1031,7 +1138,7 @@ function bindEvents() {
   document.getElementById("pan123-login")?.addEventListener("click", async () => {
     const form = document.getElementById("pan123-config-form");
     const config = pan123ConfigPayload(form);
-    setBusy(true);
+    setBusy(true, "正在登录 123 云盘...");
     try {
       const data = await api("/api/admin/pan123/login", {
         method: "POST",
@@ -1049,7 +1156,7 @@ function bindEvents() {
   });
 
   document.getElementById("pan123-refresh")?.addEventListener("click", async () => {
-    setBusy(true);
+    setBusy(true, "正在刷新 123 云盘状态...");
     try {
       state.admin.pan123 = await api("/api/admin/pan123/status");
       setMessage("123 云盘状态已刷新。");
@@ -1061,7 +1168,7 @@ function bindEvents() {
   });
 
   document.getElementById("pan123-logout")?.addEventListener("click", async () => {
-    setBusy(true);
+    setBusy(true, "正在清除 123 云盘登录...");
     try {
       const data = await api("/api/admin/pan123/logout", { method: "POST", body: "{}" });
       state.admin.pan123 = data.status;
@@ -1077,7 +1184,7 @@ function bindEvents() {
     button.addEventListener("click", async () => {
       const batchId = button.dataset.deleteBatch;
       if (!window.confirm("确认删除这个取号批次吗？删除后本地批次和账号明细都会移除。")) return;
-      setBusy(true);
+      setBusy(true, "正在删除取号批次...");
       try {
         await api(`/api/admin/batches/${batchId}`, { method: "DELETE" });
         await refreshAll();
@@ -1095,7 +1202,7 @@ function bindEvents() {
       event.preventDefault();
       const id = form.dataset.profileForm;
       const payload = profilePayload(form, id);
-      setBusy(true);
+      setBusy(true, id ? "正在保存 Sub2API 账号..." : "正在新增 Sub2API 账号...");
       try {
         await api(id ? `/api/admin/profiles/${id}` : "/api/admin/profiles", {
           method: id ? "PUT" : "POST",
@@ -1113,7 +1220,7 @@ function bindEvents() {
 
   document.querySelectorAll("[data-test-profile]").forEach((button) => {
     button.addEventListener("click", async () => {
-      setBusy(true);
+      setBusy(true, "正在测试 Sub2API 连接...");
       try {
         const data = await api(`/api/admin/profiles/${button.dataset.testProfile}/test`, { method: "POST", body: "{}" });
         setMessage(`连接成功：${data.email}`);
@@ -1127,7 +1234,7 @@ function bindEvents() {
 
   document.querySelectorAll("[data-sync-profile]").forEach((button) => {
     button.addEventListener("click", async () => {
-      setBusy(true);
+      setBusy(true, "正在同步 Sub2API 分组...");
       try {
         const data = await api(`/api/admin/profiles/${button.dataset.syncProfile}/sync-groups`, { method: "POST", body: "{}" });
         await loadAdmin();
@@ -1145,7 +1252,7 @@ function bindEvents() {
       event.preventDefault();
       const id = form.dataset.userForm;
       const payload = userPayloadFromForm(form);
-      setBusy(true);
+      setBusy(true, id ? "正在保存用户..." : "正在新增用户...");
       try {
         await api(id ? `/api/admin/users/${id}` : "/api/admin/users", {
           method: id ? "PUT" : "POST",

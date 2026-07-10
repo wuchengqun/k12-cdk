@@ -14,7 +14,7 @@
 - 前台输入数量，批量验活，导出 Sub2API 原生账号 JSON
 - 首页展示用户已取号数量、批次数、已分配账号
 - 取号页展示当前取号分组下剩余账号数量
-- 取号支持下载 JSON 或生成 123 云盘分享链接
+- 取号前可选择导出格式：Sub2API、CPA、Cockpit、9router；取号后支持下载 JSON 或生成 123 云盘分享链接
 - 后台按用户、按 Sub2API 账号统计取号数量
 - 后台展示今日、总计、按天取号统计
 - 管理员可删除取号批次和对应账号明细
@@ -97,6 +97,9 @@ PAN123_COOKIE=
 PAN123_LOGIN_UUID=
 PAN123_PARENT_FILE_ID=0
 PAN123_SHARE_DAYS=1
+PAN123_SHARE_APP_VERSION=3
+PAN123_SHARE_TRAFFIC_SWITCH=4
+PAN123_SHARE_CACHE_PARAM=373687248
 ```
 
 `PAN123_ACCOUNT` 和 `PAN123_PASSWORD` 用于 123 云盘接口登录。登录成功后会把凭证和用户信息保存到本地 SQLite，后续“卡网分享”会继续走接口自动复用。也可以改用 `PAN123_TOKEN` 或 `PAN123_COOKIE` 作为分享凭证。

@@ -133,6 +133,7 @@ function migrate() {
   addColumn("take_batches", "restore_status TEXT");
   addColumn("take_batches", "restored_at TEXT");
   addColumn("take_batches", "delivery_method TEXT NOT NULL DEFAULT 'download'");
+  addColumn("take_batches", "export_format TEXT NOT NULL DEFAULT 'sub2api'");
   addColumn("take_batches", "share_status TEXT");
   addColumn("take_batches", "share_url TEXT");
   addColumn("take_batches", "share_pwd TEXT");

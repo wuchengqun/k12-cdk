@@ -61,6 +61,16 @@ function apiCacheBust() {
   return `${Math.floor(Date.now() / 1000)}-${crypto.randomInt(100000, 9999999)}-${crypto.randomInt(100000000, 429496729)}`;
 }
 
+function shareUrlFromPayload(share) {
+  return share?.ShareUrl
+    || share?.shareUrl
+    || share?.share_url
+    || share?.shareLinkList?.list?.[0]
+    || share?.shareLinkList?.standBy
+    || share?.shareLinkList?.standby
+    || "";
+}
+
 function tokenFromPayload(payload) {
   const directToken = payload?.data?.token || payload?.token || payload?.data?.Token || payload?.Token;
   if (directToken) return String(directToken).trim();
@@ -97,6 +107,9 @@ class Pan123Client {
     this.apiBase = String(config.apiBase || process.env.PAN123_API_BASE || "https://api.123278.com/b/api").replace(/\/+$/, "");
     this.parentFileId = Number(config.parentFileId ?? process.env.PAN123_PARENT_FILE_ID ?? 0) || 0;
     this.shareDays = Number(config.shareDays || process.env.PAN123_SHARE_DAYS || 1);
+    this.shareAppVersion = String(config.shareAppVersion || process.env.PAN123_SHARE_APP_VERSION || "3").trim();
+    this.shareTrafficSwitch = Number(config.shareTrafficSwitch || process.env.PAN123_SHARE_TRAFFIC_SWITCH || 4);
+    this.shareCacheParam = String(config.shareCacheParam || process.env.PAN123_SHARE_CACHE_PARAM || "373687248").trim();
     this.loginUuid = String(config.loginUuid || process.env.PAN123_LOGIN_UUID || randomLoginUuid()).trim();
     this.token = this.staticToken || null;
   }
@@ -178,11 +191,12 @@ class Pan123Client {
   }
 
   async api(path, options = {}) {
+    const { cacheParam, ...requestOptions } = options;
     const token = await this.ensureToken();
     const url = new URL(`${this.apiBase}/${path.replace(/^\/+/, "")}`);
-    url.searchParams.set(process.env.PAN123_CACHE_PARAM || "4043287568", apiCacheBust());
+    url.searchParams.set(cacheParam || process.env.PAN123_CACHE_PARAM || "4043287568", apiCacheBust());
     const response = await fetch(url, {
-      ...options,
+      ...requestOptions,
       headers: {
         ...jsonHeaders({
           LoginUuid: this.loginUuid,
@@ -190,7 +204,7 @@ class Pan123Client {
           Referer: "https://yun.123pan.cn/",
           ...this.authHeaders(token)
         }),
-        ...(options.headers || {})
+        ...(requestOptions.headers || {})
       }
     });
     const text = await response.text();
@@ -265,23 +279,31 @@ class Pan123Client {
 
   async createShare({ fileId, fileName }) {
     const sharePwd = randomSharePwd();
-    const share = await this.post("share/create", {
-      driveId: 0,
-      expiration: shanghaiExpiration(this.shareDays),
-      fileIdList: Number(fileId),
-      shareName: fileName,
-      sharePwd,
-      event: "shareCreate",
-      fileNum: 1,
-      renameVisible: false,
-      shareModality: 1,
-      operatePlace: 1,
-      trafficLimitSwitch: 1,
-      trafficLimit: 0,
-      trafficSwitch: 1,
-      fillPwdSwitch: 0
+    const share = await this.api("share/create", {
+      method: "POST",
+      cacheParam: this.shareCacheParam,
+      headers: {
+        Accept: "*/*",
+        "App-Version": this.shareAppVersion
+      },
+      body: JSON.stringify({
+        driveId: 0,
+        expiration: shanghaiExpiration(this.shareDays),
+        fileIdList: Number(fileId),
+        shareName: fileName,
+        sharePwd,
+        event: "shareCreate",
+        fileNum: 1,
+        renameVisible: false,
+        shareModality: 1,
+        operatePlace: 1,
+        trafficLimitSwitch: 1,
+        trafficLimit: 0,
+        trafficSwitch: this.shareTrafficSwitch,
+        fillPwdSwitch: 0
+      })
     });
-    const url = share.ShareUrl || share.shareLinkList?.list?.[0] || share.shareLinkList?.standBy || "";
+    const url = shareUrlFromPayload(share);
     if (!url) throw new Pan123Error("123云盘创建分享成功但没有返回链接", 502, share);
     return {
       url,

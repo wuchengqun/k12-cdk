@@ -15,6 +15,7 @@ const {
 } = require("./db");
 const { Sub2ApiClient, Sub2ApiError } = require("./sub2apiClient");
 const { Pan123Client, Pan123Error } = require("./pan123Client");
+const { formatExportDocument, normalizeExportFormat, exportFormatLabel } = require("./exportFormatter");
 
 const app = express();
 const port = Number(process.env.PORT || 8978);
@@ -225,10 +226,19 @@ function parseAccountTestResult(raw) {
     }
   }
   const errorEvent = events.find((event) => event.type === "error");
-  if (errorEvent) return { ok: false, error: errorEvent.error || errorEvent.message || "账号测试失败" };
+  if (errorEvent) return {
+    ok: false,
+    error: errorEvent.error || errorEvent.message || "账号测试失败",
+    status: Number(errorEvent.status || errorEvent.status_code || errorEvent.code || 0) || null
+  };
   const completeEvent = events.find((event) => event.type === "test_complete");
   if (completeEvent) return { ok: completeEvent.success === true, error: completeEvent.success === true ? "" : "账号测试未通过" };
   return { ok: false, error: "账号测试没有返回完成事件" };
+}
+
+function isUnauthorizedValidationFailure(result) {
+  if (Number(result.status || result.statusCode || result.code || 0) === 401) return true;
+  return /\b401\b|unauthorized/i.test(String(result.error || ""));
 }
 
 function accountTestSummary(results) {
@@ -237,10 +247,10 @@ function accountTestSummary(results) {
   const validResults = results.filter((result) => result.ok);
   const success = total - failedResults.length;
   const failed = failedResults.length;
+  const unauthorized = failedResults.filter(isUnauthorizedValidationFailure).length;
   const allIssues = failedResults.map((result) => `${result.account.id}: ${result.error || "账号测试失败"}`);
   const message = [
-    `批量验活完成：成功 ${success}，失败 ${failed}，总计 ${total}`,
-    allIssues.length ? `失败明细：${allIssues.slice(0, 3).join("；")}${allIssues.length > 3 ? "；..." : ""}` : ""
+    `批量验活完成：成功 ${success}，失败 ${failed}，其中 401 ${unauthorized}，总计 ${total}`
   ].filter(Boolean).join("。");
   return {
     status: failed > 0 ? (success > 0 ? "partial_failed" : "failed") : "ok",
@@ -248,6 +258,7 @@ function accountTestSummary(results) {
     total,
     success,
     failed,
+    unauthorized,
     issues: allIssues,
     validAccounts: validResults.map((result) => result.account),
     invalidAccounts: failedResults.map((result) => result.account)
@@ -263,9 +274,9 @@ async function testRemoteAccounts(remote, accounts) {
       try {
         const raw = await remote.testAccount(account.id);
         const parsed = parseAccountTestResult(raw);
-        return { account, ok: parsed.ok, error: parsed.error };
+        return { account, ok: parsed.ok, error: parsed.error, status: parsed.status || null };
       } catch (error) {
-        return { account, ok: false, error: error.message || "账号测试请求失败" };
+        return { account, ok: false, error: error.message || "账号测试请求失败", status: error.status || error.statusCode || null };
       }
     })));
   }
@@ -285,25 +296,24 @@ function refillValidationStatus(selectedCount, requested) {
 
 function refillValidationMessage(summary, selectedCount, requested) {
   const skipped = summary?.failed || 0;
+  const unauthorized = summary?.unauthorized || 0;
   const checked = summary?.total || 0;
   const shortage = Math.max(0, requested - selectedCount);
   const parts = [
-    `批量验活完成：可用 ${selectedCount}，跳过失败 ${skipped}，目标 ${requested}，实际检查 ${checked}`
+    `批量验活完成：可用 ${selectedCount}，失败 ${skipped}，其中 401 ${unauthorized}，目标 ${requested}，实际检查 ${checked}`
   ];
   if (shortage > 0) parts.push(`正常账号不足，还差 ${shortage} 个`);
-  if (summary?.issues?.length) {
-    parts.push(`失败明细：${summary.issues.slice(0, 3).join("；")}${summary.issues.length > 3 ? "；..." : ""}`);
-  }
   return parts.join("。");
 }
 
 async function selectValidatedAccounts(remote, candidates, requested) {
   const selected = [];
   const results = [];
-  const chunkSize = 20;
 
-  for (let index = 0; index < candidates.length && selected.length < requested; index += chunkSize) {
-    const chunk = candidates.slice(index, index + chunkSize);
+  for (let index = 0; index < candidates.length && selected.length < requested;) {
+    const remaining = requested - selected.length;
+    const chunk = candidates.slice(index, index + remaining);
+    index += chunk.length;
     const chunkResults = await testRemoteAccounts(remote, chunk);
     results.push(...chunkResults);
     for (const result of chunkResults) {
@@ -408,19 +418,19 @@ async function remainingAvailability(profile) {
       account_ids: accounts.map((account) => Number(account.id))
     });
   }
-  const summary = await validateRemoteAccounts(remote, [...unique.values()]);
-  const validIds = new Set(summary.validAccounts.map((account) => Number(account.id)));
+  const remainingIds = new Set(unique.keys());
   return {
     profile: publicProfile(profile),
-    total_remaining: validIds.size,
-    checked_count: summary.total,
-    skipped_count: summary.failed,
-    validation_status: summary.failed ? "partial" : "ok",
-    validation_message: `已验活可提取账号 ${validIds.size} 个，跳过失败 ${summary.failed} 个`,
+    total_remaining: remainingIds.size,
+    checked_count: 0,
+    skipped_count: 0,
+    unauthorized_count: 0,
+    validation_status: "not_checked",
+    validation_message: `号池剩余 ${remainingIds.size} 个，未验活`,
     groups: groups.map((group) => ({
       id: group.id,
       name: group.name,
-      remaining_count: group.account_ids.filter((id) => validIds.has(id)).length
+      remaining_count: group.account_ids.filter((id) => remainingIds.has(id)).length
     }))
   };
 }
@@ -576,13 +586,13 @@ function frontStats(user) {
   }));
   const recent = db.prepare(`
     SELECT id, profile_id, profile_name, requested_count, issued_count,
-           validation_status, remote_move_status, restore_status, restored_at, delivery_method,
+           validation_status, remote_move_status, restore_status, restored_at, delivery_method, export_format,
            share_status, share_url, share_pwd, share_error, shared_at, created_at
     FROM take_batches
     WHERE user_id = ?
     ORDER BY created_at DESC
     LIMIT 10
-  `).all(user.uid);
+  `).all(user.uid).map(withPublicShare);
   return {
     total_taken: Number(total.taken_count || 0),
     today_taken: Number(todayTotal.taken_count || 0),
@@ -836,19 +846,42 @@ async function loginPan123WithApi() {
 
 function shareFileName(batch) {
   const stamp = new Date(batch.created_at || Date.now()).toISOString().replace(/\D/g, "").slice(0, 14);
-  return `sub2api-accounts-${stamp}-${String(batch.id).slice(0, 8)}.json`;
+  const format = normalizeExportFormat(batch.export_format);
+  return `${format}-accounts-${stamp}-${String(batch.id).slice(0, 8)}.json`;
+}
+
+function fullShareUrl(url, pwd) {
+  if (!url) return "";
+  if (!pwd) return url;
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set("pwd", pwd);
+    parsed.hash = parsed.hash || "#";
+    return parsed.toString();
+  } catch {
+    const cleanUrl = String(url).replace(/#.*$/, "");
+    const joiner = cleanUrl.includes("?") ? "&" : "?";
+    return `${cleanUrl}${joiner}pwd=${encodeURIComponent(pwd)}#`;
+  }
 }
 
 function publicShare(row) {
   if (!row) return null;
+  const url = row.share_url || "";
+  const pwd = row.share_pwd || "";
   return {
     status: row.share_status || "not_requested",
-    url: row.share_url || "",
-    pwd: row.share_pwd || "",
+    url,
+    pwd,
+    full_url: fullShareUrl(url, pwd),
     file_id: row.share_file_id || null,
     error: row.share_error || "",
     shared_at: row.shared_at || ""
   };
+}
+
+function withPublicShare(row) {
+  return row ? { ...row, share_full_url: fullShareUrl(row.share_url || "", row.share_pwd || "") } : row;
 }
 
 function updateBatchShare(batchId, patch) {
@@ -921,8 +954,9 @@ async function shareBatchToPan(batch) {
       status: "ok",
       url: result.url,
       pwd: result.pwd,
+      full_url: fullShareUrl(result.url, result.pwd),
       file_id: result.fileId,
-      message: result.message,
+      message: fullShareUrl(result.url, result.pwd),
       shared_at: sharedAt
     };
   } catch (error) {
@@ -1030,6 +1064,7 @@ app.post("/api/front/validate", requireAuth, async (req, res) => {
       success_count: result.selected.length,
       failed_count: result.summary.failed,
       skipped_count: result.summary.failed,
+      unauthorized_count: result.summary.unauthorized,
       total_checked_count: result.summary.total,
       accounts: result.selected.map((account) => ({
         id: account.id,
@@ -1049,6 +1084,7 @@ app.post("/api/front/take", requireAuth, async (req, res) => {
     const requested = Math.max(1, Math.min(Number(req.body.count || 1), 500));
     const validate = req.body.validate !== false;
     const delivery = req.body.delivery === "kanwang_share" ? "kanwang_share" : "download";
+    const exportFormat = normalizeExportFormat(req.body.export_format);
     const profile = assertAssignedProfile(req, req.body.profile_id);
     if (!profile) return res.status(403).json({ error: "没有可用的 Sub2API 账号分配" });
     const config = profileForClient(profile);
@@ -1058,6 +1094,7 @@ app.post("/api/front/take", requireAuth, async (req, res) => {
     let validationStatus = validate ? "skipped" : "disabled";
     let validationMessage = validate ? "没有可验活账号" : "未启用验活";
     let skippedCount = 0;
+    let unauthorizedCount = 0;
     let totalCheckedCount = 0;
 
     if (validate && candidates.length) {
@@ -1066,6 +1103,7 @@ app.post("/api/front/take", requireAuth, async (req, res) => {
       validationStatus = result.status;
       validationMessage = result.message;
       skippedCount = result.summary.failed;
+      unauthorizedCount = result.summary.unauthorized;
       totalCheckedCount = result.summary.total;
     }
 
@@ -1073,6 +1111,13 @@ app.post("/api/front/take", requireAuth, async (req, res) => {
     if (!ids.length) {
       return res.status(400).json({ error: validate ? "当前取号分组没有验活正常的可提取账号，已停止取号，不会生成下载文件" : "当前取号分组没有可提取账号，已停止取号，不会生成下载文件" });
     }
+
+    const sourceExportJson = ids.length ? await remote.exportAccounts(ids) : {
+      exported_at: now(),
+      proxies: [],
+      accounts: []
+    };
+    const exportJson = formatExportDocument(sourceExportJson, exportFormat);
 
     let moveStatus = "未移动";
     let movedToGroupIds = [];
@@ -1082,20 +1127,14 @@ app.post("/api/front/take", requireAuth, async (req, res) => {
       movedToGroupIds = config.taken_group_ids;
     }
 
-    const exportJson = ids.length ? await remote.exportAccounts(ids) : {
-      exported_at: now(),
-      proxies: [],
-      accounts: []
-    };
-
     const batchId = crypto.randomUUID();
     const createdAt = now();
     const insertBatch = db.prepare(`
       INSERT INTO take_batches (
         id, requested_count, issued_count, validate_requested, validation_status,
         remote_move_status, export_json, created_by, created_at,
-        user_id, profile_id, profile_name, delivery_method, share_status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        user_id, profile_id, profile_name, delivery_method, export_format, share_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertRecord = db.prepare(`
       INSERT INTO take_records (
@@ -1120,6 +1159,7 @@ app.post("/api/front/take", requireAuth, async (req, res) => {
         profile.id,
         profile.name,
         delivery,
+        exportFormat,
         delivery === "kanwang_share" ? "pending" : "not_requested"
       );
       for (const account of selected) {
@@ -1160,12 +1200,15 @@ app.post("/api/front/take", requireAuth, async (req, res) => {
     res.json({
       batch_id: batchId,
       delivery,
+      export_format: exportFormat,
+      export_format_label: exportFormatLabel(exportFormat),
       profile: publicProfile(profile),
       requested_count: requested,
       issued_count: selected.length,
       validation_status: validationStatus,
       validation_message: validationMessage,
       skipped_count: skippedCount,
+      unauthorized_count: unauthorizedCount,
       total_checked_count: totalCheckedCount,
       remote_move_status: moveStatus,
       download_url: `/api/take/${batchId}/download`,
@@ -1214,20 +1257,20 @@ app.get("/api/take/:id/download", requireAuth, (req, res) => {
     return res.status(403).json({ error: "不能下载其他用户的取号文件" });
   }
   res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="sub2api-accounts-${row.id}.json"`);
+  res.setHeader("Content-Disposition", `attachment; filename="${normalizeExportFormat(row.export_format)}-accounts-${row.id}.json"`);
   res.send(row.export_json);
 });
 
 app.get("/api/front/records", requireAuth, (req, res) => {
   const batches = db.prepare(`
     SELECT id, profile_id, profile_name, requested_count, issued_count, validate_requested,
-           validation_status, remote_move_status, restore_status, restored_at, delivery_method,
+           validation_status, remote_move_status, restore_status, restored_at, delivery_method, export_format,
            share_status, share_url, share_pwd, share_error, shared_at, created_at
     FROM take_batches
     WHERE user_id = ?
     ORDER BY created_at DESC
     LIMIT 100
-  `).all(req.user.uid);
+  `).all(req.user.uid).map(withPublicShare);
   const records = db.prepare(`
     SELECT id, batch_id, profile_id, profile_name, remote_account_id, account_name, platform, type,
            status, validation_status, created_at
@@ -1440,14 +1483,14 @@ app.get("/api/admin/records", requireAuth, requireAdmin, (req, res) => {
   const batches = db.prepare(`
     SELECT b.id, b.user_id, b.profile_id, b.profile_name, b.requested_count, b.issued_count,
            b.validate_requested, b.validation_status, b.remote_move_status, b.restore_status, b.restored_at,
-           b.delivery_method, b.share_status, b.share_url, b.share_pwd, b.share_error, b.shared_at,
+           b.delivery_method, b.export_format, b.share_status, b.share_url, b.share_pwd, b.share_error, b.shared_at,
            b.created_by, b.created_at,
            u.username
     FROM take_batches b
     LEFT JOIN users u ON u.id = b.user_id
     ORDER BY b.created_at DESC
     LIMIT 200
-  `).all();
+  `).all().map(withPublicShare);
   const records = db.prepare(`
     SELECT r.id, r.batch_id, r.user_id, r.profile_id, r.profile_name, r.remote_account_id,
            r.account_name, r.platform, r.type, r.status, r.validation_status, r.created_at,
