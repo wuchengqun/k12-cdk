@@ -15,7 +15,6 @@ const {
 } = require("./db");
 const { Sub2ApiClient, Sub2ApiError } = require("./sub2apiClient");
 const { Pan123Client, Pan123Error } = require("./pan123Client");
-const { loginPan123ByPlaywright, publicUserInfo } = require("./pan123PlaywrightLogin");
 
 const app = express();
 const port = Number(process.env.PORT || 8978);
@@ -649,25 +648,23 @@ function pan123StoredAuth() {
   };
 }
 
-function boolFromValue(value, fallback = false) {
-  if (value === undefined || value === null || value === "") return fallback;
-  return !["0", "false", "no", "off"].includes(String(value).trim().toLowerCase());
+function publicUserInfo(info) {
+  if (!info || typeof info !== "object") return null;
+  const maskPhone = (value) => String(value || "").replace(/^(\d{3})\d+(\d{4})$/, "$1****$2");
+  return {
+    uid: info.UID || info.uid || "",
+    nickname: maskPhone(info.Nickname || info.nickname || ""),
+    passport: maskPhone(info.Passport || info.passport || ""),
+    mail: info.Mail || info.mail || "",
+    file_count: info.FileCount ?? info.file_count ?? null,
+    space_used: info.SpaceUsed ?? info.space_used ?? null,
+    space_permanent: info.SpacePermanent ?? info.space_permanent ?? null
+  };
 }
 
 function pan123StoredConfig() {
-  const saved = getSetting("pan123_config", {}) || {};
-  const envMethod = String(process.env.PAN123_LOGIN_METHOD || "").trim().toLowerCase();
-  const savedMethod = String(saved.login_method || saved.loginMethod || "").trim().toLowerCase();
-  const loginMethod = ["api", "playwright"].includes(savedMethod)
-    ? savedMethod
-    : ["api", "playwright"].includes(envMethod) ? envMethod : "api";
-  const timeout = Number(saved.playwright_timeout_ms || saved.playwrightTimeoutMs || process.env.PAN123_PLAYWRIGHT_TIMEOUT_MS || 90000);
   return {
-    login_method: loginMethod,
-    playwright_headless: saved.playwright_headless === undefined && saved.playwrightHeadless === undefined
-      ? boolFromValue(process.env.PAN123_PLAYWRIGHT_HEADLESS, process.env.NODE_ENV === "production")
-      : Boolean(saved.playwright_headless ?? saved.playwrightHeadless),
-    playwright_timeout_ms: Number.isFinite(timeout) && timeout > 0 ? Math.min(Math.max(timeout, 10000), 300000) : 90000
+    login_method: "api"
   };
 }
 
@@ -689,24 +686,11 @@ function pan123PublicConfig() {
 }
 
 function savePan123Config(body = {}) {
-  const current = pan123StoredConfig();
   const saved = getSetting("pan123_config", {}) || {};
-  const requestedMethod = String(body.login_method || body.loginMethod || "").trim().toLowerCase();
-  const hasHeadless = Object.prototype.hasOwnProperty.call(body, "playwright_headless")
-    || Object.prototype.hasOwnProperty.call(body, "playwrightHeadless");
   const hasAccount = Object.prototype.hasOwnProperty.call(body, "account");
   const hasPassword = Object.prototype.hasOwnProperty.call(body, "password") && String(body.password || "") !== "";
-  const requestedHeadless = Object.prototype.hasOwnProperty.call(body, "playwright_headless")
-    ? body.playwright_headless
-    : body.playwrightHeadless;
-  const loginMethod = ["api", "playwright"].includes(requestedMethod)
-    ? requestedMethod
-    : current.login_method;
-  const timeout = Number(body.playwright_timeout_ms || body.playwrightTimeoutMs || current.playwright_timeout_ms);
   const config = {
-    login_method: loginMethod,
-    playwright_headless: hasHeadless ? boolFromValue(requestedHeadless, current.playwright_headless) : current.playwright_headless,
-    playwright_timeout_ms: Number.isFinite(timeout) && timeout > 0 ? Math.min(Math.max(timeout, 10000), 300000) : current.playwright_timeout_ms
+    login_method: "api"
   };
   if (hasAccount || saved.account) config.account = hasAccount ? String(body.account || "").trim() : String(saved.account || "").trim();
   if (hasPassword || saved.password) config.password = hasPassword ? String(body.password || "") : String(saved.password || "");
@@ -790,31 +774,6 @@ async function loginPan123WithApi() {
   });
 }
 
-async function loginPan123WithPlaywright() {
-  const config = pan123StoredConfig();
-  const credentials = pan123Credentials();
-  const result = await loginPan123ByPlaywright({
-    account: credentials.account,
-    password: credentials.password,
-    headless: config.playwright_headless,
-    timeoutMs: config.playwright_timeout_ms
-  });
-  return savePan123Auth({
-    token: result.token || "",
-    cookie: "",
-    loginUuid: result.loginUuid || "",
-    userInfo: result.userInfo || null,
-    loginMethod: "playwright"
-  });
-}
-
-async function loginPan123WithConfiguredMethod(method = "") {
-  const targetMethod = ["api", "playwright"].includes(String(method).trim().toLowerCase())
-    ? String(method).trim().toLowerCase()
-    : pan123StoredConfig().login_method;
-  return targetMethod === "playwright" ? loginPan123WithPlaywright() : loginPan123WithApi();
-}
-
 function shareFileName(batch) {
   const stamp = new Date(batch.created_at || Date.now()).toISOString().replace(/\D/g, "").slice(0, 14);
   return `sub2api-accounts-${stamp}-${String(batch.id).slice(0, 8)}.json`;
@@ -867,7 +826,7 @@ async function shareBatchToPan(batch) {
       error.statusCode = 400;
       throw error;
     }
-    await loginPan123WithConfiguredMethod();
+    await loginPan123WithApi();
     auth = pan123EffectiveAuth();
     if (!auth.token && !auth.cookie) {
       const error = new Error("123云盘登录成功后没有拿到可用于分享的凭证，请到后台 123云盘 页面重新登录");
@@ -1234,7 +1193,7 @@ app.post("/api/admin/pan123/config", requireAuth, requireAdmin, (req, res) => {
 app.post("/api/admin/pan123/login", requireAuth, requireAdmin, async (req, res) => {
   try {
     if (req.body?.config) savePan123Config(req.body.config);
-    const status = await loginPan123WithConfiguredMethod(req.body?.method);
+    const status = await loginPan123WithApi();
     res.json({ ok: true, status });
   } catch (error) {
     handleError(res, error);
@@ -1243,7 +1202,7 @@ app.post("/api/admin/pan123/login", requireAuth, requireAdmin, async (req, res) 
 
 app.post("/api/admin/pan123/login-api", requireAuth, requireAdmin, async (req, res) => {
   try {
-    savePan123Config({ ...(req.body?.config || pan123StoredConfig()), login_method: "api" });
+    savePan123Config(req.body?.config || {});
     const status = await loginPan123WithApi();
     res.json({ ok: true, status });
   } catch (error) {
@@ -1251,18 +1210,8 @@ app.post("/api/admin/pan123/login-api", requireAuth, requireAdmin, async (req, r
   }
 });
 
-app.post("/api/admin/pan123/login-web", requireAuth, requireAdmin, async (req, res) => {
-  try {
-    savePan123Config({ ...(req.body?.config || pan123StoredConfig()), login_method: "playwright" });
-    const status = await loginPan123WithPlaywright();
-    res.json({ ok: true, status });
-  } catch (error) {
-    handleError(res, error);
-  }
-});
-
 app.post("/api/admin/pan123/login-code", requireAuth, requireAdmin, async (req, res) => {
-  res.status(410).json({ error: "123云盘登录已改为 Playwright 账密网页登录，请使用网页登录按钮" });
+  res.status(410).json({ error: "123云盘验证码登录已移除，请使用接口登录" });
 });
 
 app.post("/api/admin/pan123/logout", requireAuth, requireAdmin, (req, res) => {

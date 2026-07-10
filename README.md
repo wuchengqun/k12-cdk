@@ -97,19 +97,14 @@ PAN123_COOKIE=
 PAN123_LOGIN_UUID=
 PAN123_PARENT_FILE_ID=0
 PAN123_SHARE_DAYS=1
-PAN123_LOGIN_METHOD=api
-PAN123_PLAYWRIGHT_HEADLESS=false
-PAN123_PLAYWRIGHT_CHANNEL=chrome
-PAN123_PLAYWRIGHT_EXECUTABLE_PATH=
-PAN123_PLAYWRIGHT_TIMEOUT_MS=90000
 ```
 
-`PAN123_ACCOUNT` 和 `PAN123_PASSWORD` 用于 123 云盘登录。管理员进入“后台配置 / 123云盘”后，可以在后台选择“接口登录”或“Playwright 登录”，也可以切换 Playwright 无头模式；登录成功后会把凭证和用户信息保存到本地 SQLite，后续“卡网分享”会继续走接口自动复用。也可以改用 `PAN123_TOKEN` 或 `PAN123_COOKIE` 作为分享凭证。
+`PAN123_ACCOUNT` 和 `PAN123_PASSWORD` 用于 123 云盘接口登录。登录成功后会把凭证和用户信息保存到本地 SQLite，后续“卡网分享”会继续走接口自动复用。也可以改用 `PAN123_TOKEN` 或 `PAN123_COOKIE` 作为分享凭证。
 
 ## 使用流程
 
 1. 使用后台管理员登录。
-2. 如需使用“卡网分享”，进入“后台配置 / 123云盘”，选择登录方式并点击“按配置登录”完成 123 云盘登录。
+2. 如需使用“卡网分享”，进入“后台配置 / 123云盘”，点击“接口登录”完成 123 云盘登录。
 3. 进入“后台配置 / Sub2API账号”，测试连接并同步分组。
 4. 在每个 Sub2API 账号里勾选“取号分组”和“已取号分组”。
 5. 进入“用户分配”，给前台用户分配一个或多个 Sub2API 账号。

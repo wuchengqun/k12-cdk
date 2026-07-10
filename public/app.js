@@ -449,13 +449,12 @@ function pan123View() {
   const stateText = status.logged_in ? "已登录" : "未登录";
   const credentialText = status.has_token ? "Token" : status.has_cookie ? "Cookie" : "-";
   const userText = status.user?.nickname || status.user?.passport || "-";
-  const loginMethod = config.login_method === "playwright" ? "playwright" : "api";
   return `
     <section class="panel">
       <div class="section-head">
         <div>
           <h2>123 云盘登录配置</h2>
-          <p>接口登录会直接用 123 云盘接口获取 token；Playwright 登录会打开官方登录页，也可以切换无头模式。登录成功后，卡网分享会继续走接口复用凭证。</p>
+          <p>接口登录会直接用 123 云盘接口获取 token。登录成功后，卡网分享会继续走接口复用凭证。</p>
         </div>
       </div>
       <div class="stats compact-stats">
@@ -477,29 +476,14 @@ function pan123View() {
           <label for="pan123-password">123 云盘密码</label>
           <input id="pan123-password" name="password" type="password" autocomplete="current-password" placeholder="${config.has_password ? "已从配置文件读取，留空不修改" : ""}" />
         </div>
-        <div class="field">
-          <label for="pan123-login-method">登录方式</label>
-          <select id="pan123-login-method" name="login_method">
-            <option value="api" ${loginMethod === "api" ? "selected" : ""}>接口登录</option>
-            <option value="playwright" ${loginMethod === "playwright" ? "selected" : ""}>Playwright 登录</option>
-          </select>
-        </div>
-        <label class="toggle">
-          <input name="playwright_headless" type="checkbox" ${config.playwright_headless ? "checked" : ""} />
-          <span>Playwright 无头模式</span>
-        </label>
-        <div class="field">
-          <label for="pan123-timeout">Playwright 超时（毫秒）</label>
-          <input id="pan123-timeout" name="playwright_timeout_ms" type="number" min="10000" max="300000" step="1000" value="${escapeHtml(config.playwright_timeout_ms || 90000)}" />
-        </div>
         <div class="actions">
-          <button class="btn primary" type="button" id="pan123-login" ${state.busy ? "disabled" : ""}>按配置登录</button>
+          <button class="btn primary" type="button" id="pan123-login" ${state.busy ? "disabled" : ""}>接口登录</button>
           <button class="btn ghost" type="submit" ${state.busy ? "disabled" : ""}>保存配置</button>
           <button class="btn ghost" type="button" id="pan123-refresh" ${state.busy ? "disabled" : ""}>刷新状态</button>
           ${status.logged_in ? `<button class="btn danger" type="button" id="pan123-logout" ${state.busy ? "disabled" : ""}>清除登录</button>` : ""}
         </div>
       </form>
-      <p class="muted">接口登录速度更快；如果接口登录被风控或没有返回 token，可切换到 Playwright 登录。无头模式适合服务器运行，有头模式适合需要手动处理页面验证时使用。</p>
+      <p class="muted">接口登录会使用上面的 123 云盘账号和密码获取分享凭证，也可以改用环境变量里的 PAN123_TOKEN 或 PAN123_COOKIE 作为分享凭证。</p>
       ${status.updated_at ? `<p class="muted">上次登录：${escapeHtml(fmtDate(status.updated_at))}</p>` : ""}
       ${status.configured ? "" : `<div class="notice error">还没有配置 123 云盘账号或密码。</div>`}
     </section>
@@ -812,12 +796,9 @@ function userPayloadFromForm(form) {
 }
 
 function pan123ConfigPayload(form) {
-  const timeout = Number(form.elements.playwright_timeout_ms.value || 90000);
   const payload = {
     account: form.elements.account.value,
-    login_method: form.elements.login_method.value === "playwright" ? "playwright" : "api",
-    playwright_headless: Boolean(form.elements.playwright_headless.checked),
-    playwright_timeout_ms: Number.isFinite(timeout) ? timeout : 90000
+    login_method: "api"
   };
   if (form.elements.password.value) payload.password = form.elements.password.value;
   return payload;
@@ -1055,12 +1036,11 @@ function bindEvents() {
       const data = await api("/api/admin/pan123/login", {
         method: "POST",
         body: JSON.stringify({
-          method: config.login_method,
           config
         })
       });
       state.admin.pan123 = data.status;
-      setMessage(`${config.login_method === "playwright" ? "Playwright" : "接口"}登录成功，卡网分享会继续复用这次 123 云盘登录状态。`);
+      setMessage("接口登录成功，卡网分享会继续复用这次 123 云盘登录状态。");
     } catch (error) {
       setMessage("", error.message);
     } finally {

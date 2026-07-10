@@ -125,7 +125,7 @@ class Pan123Client {
 
     if (this.hasConfiguredCookie) return "";
     if (hasLoginCookie(this.cookie)) return "";
-    throw new Pan123Error("123云盘接口直登没有返回可上传分享的凭证；请先到后台 123云盘 页面点击 Playwright 网页登录，或配置 PAN123_TOKEN / PAN123_COOKIE", 502, {
+    throw new Pan123Error("123云盘接口直登没有返回可上传分享的凭证；请检查账号密码，或配置 PAN123_TOKEN / PAN123_COOKIE", 502, {
       code: payload.code,
       message: payload.message,
       dataKeys: payload.data && Object.keys(payload.data)
