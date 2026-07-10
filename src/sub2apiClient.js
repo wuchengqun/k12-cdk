@@ -119,7 +119,7 @@ class Sub2ApiClient {
     return this.get(`/admin/accounts?${params.toString()}`);
   }
 
-  async listAccountsFromGroups(groupIds = [], maxPagesPerGroup = 20) {
+  async listAccountsFromGroups(groupIds = [], maxPagesPerGroup = 20, options = {}) {
     if (!groupIds.length) return [];
     const unique = new Map();
     const groupList = groupIds;
@@ -127,7 +127,12 @@ class Sub2ApiClient {
       let page = 1;
       let pages = 1;
       do {
-        const filters = { status: "active" };
+        const filters = {};
+        if (options.includeInactive) {
+          filters.include_inactive = "true";
+        } else {
+          filters.status = "active";
+        }
         if (groupId) filters.group = groupId;
         const data = await this.accounts(page, 100, filters);
         const items = data.items || [];

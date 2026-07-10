@@ -454,7 +454,7 @@ select:focus {
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  gap: 22px 16px;
 }
 
 .form-grid.compact {
@@ -475,6 +475,7 @@ select:focus {
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+  grid-column: 1 / -1;
 }
 
 .delivery-field,
@@ -682,12 +683,12 @@ select:focus {
 
 .extractable-card {
   grid-column: 1 / -1;
-  margin-bottom: 18px;
+  margin-bottom: 0;
   border: 1px solid #bfe7dd;
   border-radius: 8px;
   background:
     linear-gradient(135deg, #effdf8 0%, #ffffff 58%, #fffaf0 100%);
-  padding: 20px;
+  padding: 18px 22px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -703,11 +704,9 @@ select:focus {
 }
 
 .availability-total b {
-  display: block;
   color: var(--primary);
   font-size: 52px;
   line-height: 1;
-  margin-top: 3px;
 }
 
 .extractable-card > div > b {
@@ -721,6 +720,32 @@ select:focus {
 .extractable-card .availability-total b {
   font-size: 52px;
   line-height: 1;
+}
+
+.availability-count-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-top: 4px;
+}
+
+.availability-count-line span {
+  margin-top: 0;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.availability-count-line strong {
+  font-size: 18px;
+}
+
+.availability-ok {
+  color: var(--primary);
+}
+
+.availability-warn {
+  color: var(--amber);
 }
 
 .availability-total span {
@@ -750,6 +775,36 @@ select:focus {
   background: #fff;
   padding: 8px 10px;
   color: var(--text-soft);
+}
+
+.take-panel {
+  padding: 22px;
+}
+
+.take-panel .section-head {
+  margin-bottom: 18px;
+}
+
+.take-panel .field label,
+.take-panel .export-format-field > label,
+.take-panel .delivery-field > label {
+  color: var(--text);
+}
+
+.take-panel .toggle {
+  grid-column: 1 / -1;
+  justify-self: start;
+  min-height: auto;
+  margin-top: 2px;
+}
+
+.take-panel .export-format-field,
+.take-panel .delivery-field {
+  width: min(640px, 100%);
+}
+
+.take-panel .delivery-field .segmented {
+  width: min(420px, 100%);
 }
 
 .group-editor {

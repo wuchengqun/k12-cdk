@@ -405,23 +405,30 @@ async function remainingAvailability(profile) {
   const issued = getIssuedAccountIds(profile.id);
   const remote = clientForProfile(profile);
   const groupNames = new Map(groupsForProfile(profile.id).map((group) => [Number(group.id), group.name]));
-  const unique = new Map();
+  const normal = new Map();
+  const groupErrors = new Map();
   const groups = [];
   for (const groupId of config.source_group_ids) {
-    const accounts = (await remote.listAccountsFromGroups([groupId]))
-      .filter(isUsableAccount)
+    const accounts = (await remote.listAccountsFromGroups([groupId], 20, { includeInactive: true }))
       .filter((account) => !issued.has(Number(account.id)));
-    for (const account of accounts) unique.set(Number(account.id), account);
+    const normalAccounts = accounts.filter(isUsableAccount);
+    const errorAccounts = accounts.filter((account) => !isUsableAccount(account));
+    for (const account of normalAccounts) normal.set(Number(account.id), account);
+    for (const account of errorAccounts) groupErrors.set(Number(account.id), account);
     groups.push({
       id: groupId,
       name: groupNames.get(Number(groupId)) || `Group ${groupId}`,
-      account_ids: accounts.map((account) => Number(account.id))
+      account_ids: normalAccounts.map((account) => Number(account.id)),
+      error_account_ids: errorAccounts.map((account) => Number(account.id))
     });
   }
-  const remainingIds = new Set(unique.keys());
+  const remainingIds = new Set(normal.keys());
+  const groupErrorIds = new Set(groupErrors.keys());
   return {
     profile: publicProfile(profile),
     total_remaining: remainingIds.size,
+    normal_count: remainingIds.size,
+    group_error_count: groupErrorIds.size,
     checked_count: 0,
     skipped_count: 0,
     unauthorized_count: 0,
@@ -430,7 +437,8 @@ async function remainingAvailability(profile) {
     groups: groups.map((group) => ({
       id: group.id,
       name: group.name,
-      remaining_count: group.account_ids.filter((id) => remainingIds.has(id)).length
+      remaining_count: group.account_ids.filter((id) => remainingIds.has(id)).length,
+      error_count: group.error_account_ids.filter((id) => groupErrorIds.has(id)).length
     }))
   };
 }

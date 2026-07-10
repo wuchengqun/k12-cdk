@@ -401,7 +401,11 @@ function availabilityPanel() {
     <div class="extractable-card">
       <div class="availability-total">
         <p class="eyebrow">号池剩余（未验活）</p>
-        <b>${info.total_remaining}</b>
+        <div class="availability-count-line">
+          <b>${info.normal_count ?? info.total_remaining}</b>
+          <span class="availability-ok">正常状态的</span>
+          <span class="availability-warn"><strong>${info.group_error_count || 0}</strong> 当前分组错误的</span>
+        </div>
         <span>当前 Sub2API 账号取号分组内尚未取出的账号总数</span>
         ${state.availabilityLoading ? `<span class="loading-inline"><span class="spinner"></span>正在刷新号池数量...</span>` : ""}
       </div>
@@ -433,8 +437,8 @@ function takeView() {
           <p>默认只显示号池数量，不自动验活；点击只验活或开始取号时再验活。</p>
         </div>
       </div>
-      ${availabilityPanel()}
       <form id="take-form" class="form-grid">
+        ${availabilityPanel()}
         <div class="field">
           <label>Sub2API 账号</label>
           ${profileSelect()}
