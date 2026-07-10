@@ -412,7 +412,7 @@ function availabilityPanel() {
       <div class="availability-groups">
         <strong>分组明细</strong>
         ${(info.groups || []).map((group) => `
-          <span>${escapeHtml(group.name)}：<b>${group.remaining_count}</b> 个</span>
+          <span>${escapeHtml(group.name)}：<b class="count-ok">${group.remaining_count}</b> 正常 / <b class="count-warn">${group.error_count || 0}</b> 异常</span>
         `).join("") || `<span class="muted">没有取号分组</span>`}
       </div>
     </div>

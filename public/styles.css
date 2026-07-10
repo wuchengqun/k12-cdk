@@ -748,6 +748,14 @@ select:focus {
   color: var(--amber);
 }
 
+.count-ok {
+  color: var(--primary);
+}
+
+.count-warn {
+  color: var(--amber);
+}
+
 .availability-total span {
   display: block;
   margin-top: 5px;
