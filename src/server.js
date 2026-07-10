@@ -212,6 +212,70 @@ function isUsableAccount(account) {
     && !account.error_message;
 }
 
+function parseAccountTestResult(raw) {
+  const events = [];
+  for (const line of String(raw || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) continue;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    try {
+      events.push(JSON.parse(payload));
+    } catch {
+      events.push({ type: "raw", text: payload });
+    }
+  }
+  const errorEvent = events.find((event) => event.type === "error");
+  if (errorEvent) return { ok: false, error: errorEvent.error || errorEvent.message || "账号测试失败" };
+  const completeEvent = events.find((event) => event.type === "test_complete");
+  if (completeEvent) return { ok: completeEvent.success === true, error: completeEvent.success === true ? "" : "账号测试未通过" };
+  return { ok: false, error: "账号测试没有返回完成事件" };
+}
+
+function accountTestSummary(results) {
+  const total = results.length;
+  const failedResults = results.filter((result) => !result.ok);
+  const success = total - failedResults.length;
+  const failed = failedResults.length;
+  const allIssues = failedResults.map((result) => `${result.account.id}: ${result.error || "账号测试失败"}`);
+  const message = [
+    `批量验活完成：成功 ${success}，失败 ${failed}，总计 ${total}`,
+    allIssues.length ? `失败明细：${allIssues.slice(0, 3).join("；")}${allIssues.length > 3 ? "；..." : ""}` : ""
+  ].filter(Boolean).join("。");
+  return {
+    status: failed > 0 ? (success > 0 ? "partial_failed" : "failed") : "ok",
+    message,
+    total,
+    success,
+    failed,
+    issues: allIssues,
+    invalidAccounts: failedResults.map((result) => result.account)
+  };
+}
+
+async function testRemoteAccounts(remote, accounts) {
+  const results = [];
+  const chunkSize = 20;
+  for (let index = 0; index < accounts.length; index += chunkSize) {
+    const chunk = accounts.slice(index, index + chunkSize);
+    results.push(...await Promise.all(chunk.map(async (account) => {
+      try {
+        const raw = await remote.testAccount(account.id);
+        const parsed = parseAccountTestResult(raw);
+        return { account, ok: parsed.ok, error: parsed.error };
+      } catch (error) {
+        return { account, ok: false, error: error.message || "账号测试请求失败" };
+      }
+    })));
+  }
+  return results;
+}
+
+async function validateRemoteAccounts(remote, accounts) {
+  if (!accounts.length) return accountTestSummary([]);
+  return accountTestSummary(await testRemoteAccounts(remote, accounts));
+}
+
 function getIssuedAccountIds(profileId) {
   return new Set(
     db.prepare(`
@@ -928,10 +992,11 @@ app.post("/api/front/validate", requireAuth, async (req, res) => {
     const ids = accounts.map((account) => account.id);
     let status = "skipped";
     let message = "没有可验活账号";
+    let summary = null;
     if (ids.length) {
-      await clientForProfile(profile).batchRefresh(ids);
-      status = "ok";
-      message = "批量验活已完成";
+      summary = await validateRemoteAccounts(clientForProfile(profile), accounts);
+      status = summary.status;
+      message = summary.message;
     }
     const runId = crypto.randomUUID();
     db.prepare(`
@@ -944,6 +1009,8 @@ app.post("/api/front/validate", requireAuth, async (req, res) => {
       status,
       message,
       checked_count: ids.length,
+      success_count: summary?.success || 0,
+      failed_count: summary?.failed || 0,
       accounts: accounts.map((account) => ({
         id: account.id,
         name: account.name,
@@ -975,9 +1042,14 @@ app.post("/api/front/take", requireAuth, async (req, res) => {
     let validationStatus = validate ? "skipped" : "disabled";
     let validationMessage = validate ? "没有可验活账号" : "未启用验活";
     if (validate && ids.length) {
-      await remote.batchRefresh(ids);
-      validationStatus = "ok";
-      validationMessage = "批量验活已完成";
+      const summary = await validateRemoteAccounts(remote, selected);
+      validationStatus = summary.status;
+      validationMessage = summary.message;
+      if (summary.failed > 0) {
+        const error = new Error(`取号前批量验活失败，已停止取号。${summary.message}`);
+        error.statusCode = 400;
+        throw error;
+      }
     }
 
     let moveStatus = "未移动";

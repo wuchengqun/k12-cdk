@@ -83,6 +83,22 @@ class Sub2ApiClient {
     return unwrap(payload);
   }
 
+  async rawRequest(path, options = {}) {
+    const token = await this.ensureToken();
+    const headers = {
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {})
+    };
+    const response = await fetch(apiUrl(this.config, path), { ...options, headers });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Sub2ApiError(`Sub2API 请求失败：${path}`, response.status, text);
+    }
+    return text;
+  }
+
   get(path) {
     return this.request(path);
   }
@@ -135,6 +151,10 @@ class Sub2ApiClient {
   async batchRefresh(accountIds) {
     if (!accountIds.length) return null;
     return this.post("/admin/accounts/batch-refresh", { account_ids: accountIds });
+  }
+
+  async testAccount(accountId) {
+    return this.rawRequest(`/admin/accounts/${accountId}/test`, { method: "POST" });
   }
 
   async exportAccounts(accountIds) {
